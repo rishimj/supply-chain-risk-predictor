@@ -1,0 +1,24 @@
+# Binaries
+gateway
+*.exe
+
+# Go build artifacts
+*.o
+*.a
+*.so
+
+# Development files
+.vscode/
+.git/
+*.log
+
+# Test files
+*_test.go
+coverage.out
+
+# Documentation
+README.md
+
+# OS files
+.DS_Store
+Thumbs.db
