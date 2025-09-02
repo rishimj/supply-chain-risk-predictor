@@ -1,0 +1,28 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "Debug Gateway Service",
+      "type": "go",
+      "request": "launch",
+      "mode": "debug",
+      "program": "${workspaceFolder}/gateway-go/gateway-go",
+      "env": {
+        "KAFKA_BOOTSTRAP": "localhost:9092",
+        "SERVICE_ENV": "dev",
+        "PORT": "8080",
+        "PROM_PORT": "9100"
+      },
+      "args": [],
+      "showLog": true
+    },
+    {
+      "name": "Debug Gateway Tests",
+      "type": "go",
+      "request": "launch",
+      "mode": "test",
+      "program": "${workspaceFolder}/gateway-go/gateway-go",
+      "args": ["-test.v"]
+    }
+  ]
+}
