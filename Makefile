@@ -15,6 +15,7 @@ start: ## Start all services
 	@echo "✅ Services started!"
 	@echo "🔗 Gateway API: http://localhost:8080"
 	@echo "📊 Metrics: http://localhost:9100/metrics"
+	@echo "🖥️  Kafka UI: http://localhost:8090"
 
 stop: ## Stop all services
 	@echo "🛑 Stopping all services..."
@@ -31,6 +32,9 @@ logs-gateway: ## Show logs for gateway service only
 
 logs-kafka: ## Show logs for kafka service only
 	docker-compose logs -f kafka
+
+logs-kafka-ui: ## Show logs for kafka-ui service only
+	docker-compose logs -f kafka-ui
 
 build: ## Build all Docker images
 	@echo "🔨 Building services..."
@@ -78,7 +82,11 @@ clean: ## Clean up Docker resources
 # Development targets
 dev-gateway: ## Run gateway in development mode (outside Docker)
 	@echo "🔧 Starting gateway in development mode..."
-	cd gateway-go && go run .
+	cd gateway-go && KAFKA_BOOTSTRAP=localhost:9092 SERVICE_ENV=dev go run .
+
+debug-gateway: ## Debug gateway with Delve (outside Docker)
+	@echo "🐛 Starting gateway in debug mode..."
+	cd gateway-go && KAFKA_BOOTSTRAP=localhost:9092 SERVICE_ENV=dev dlv debug .
 
 test-unit: ## Run unit tests
 	@echo "🧪 Running unit tests..."

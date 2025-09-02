@@ -24,11 +24,7 @@ services:
     volumes:
       - kafka-data:/var/lib/kafka/data
     healthcheck:
-      test:
-        [
-          "CMD-SHELL",
-          "kafka-topics --bootstrap-server localhost:9092 --list || exit 1",
-        ]
+      test: ["CMD-SHELL", "nc -z localhost 9092 || exit 1"]
       interval: 30s
       timeout: 10s
       retries: 5
@@ -42,8 +38,8 @@ services:
       dockerfile: Dockerfile
     container_name: supply-chain-gateway
     ports:
-      - "8080:8080"  # Main API
-      - "9100:9100"  # Metrics
+      - "8080:8080" # Main API
+      - "9100:9100" # Metrics
     environment:
       KAFKA_BOOTSTRAP: kafka:9092
       SERVICE_ENV: dev
@@ -53,11 +49,35 @@ services:
       kafka:
         condition: service_healthy
     healthcheck:
-      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:8080/healthz"]
+      test:
+        [
+          "CMD",
+          "wget",
+          "--no-verbose",
+          "--tries=1",
+          "--spider",
+          "http://localhost:8080/healthz",
+        ]
       interval: 30s
       timeout: 10s
       retries: 3
       start_period: 40s
+    restart: unless-stopped
+    networks:
+      - supply-chain-network
+
+  kafka-ui:
+    image: provectuslabs/kafka-ui:latest
+    container_name: supply-chain-kafka-ui
+    ports:
+      - "8090:8080"
+    environment:
+      KAFKA_CLUSTERS_0_NAME: supply-chain-cluster
+      KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: kafka:9092
+      KAFKA_CLUSTERS_0_METRICS_PORT: 9997
+    depends_on:
+      kafka:
+        condition: service_healthy
     restart: unless-stopped
     networks:
       - supply-chain-network
