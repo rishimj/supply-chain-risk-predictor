@@ -16,6 +16,7 @@ start: ## Start all services
 	@echo "🔗 Gateway API: http://localhost:8080"
 	@echo "📊 Metrics: http://localhost:9100/metrics"
 	@echo "🖥️  Kafka UI: http://localhost:8090"
+	@echo "🔴 Redis UI: http://localhost:8081 (admin/admin)"
 
 stop: ## Stop all services
 	@echo "🛑 Stopping all services..."
