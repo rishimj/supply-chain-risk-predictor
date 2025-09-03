@@ -3,6 +3,7 @@ version: "3.8"
 services:
   kafka:
     image: apache/kafka:3.7.0
+    platform: linux/arm64
     hostname: kafka
     container_name: supply-chain-kafka
     ports:
@@ -68,6 +69,7 @@ services:
 
   kafka-ui:
     image: provectuslabs/kafka-ui:latest
+    platform: linux/amd64
     container_name: supply-chain-kafka-ui
     ports:
       - "8090:8080"
@@ -82,8 +84,64 @@ services:
     networks:
       - supply-chain-network
 
+  redis:
+    image: redis:7-alpine
+    platform: linux/arm64
+    container_name: supply-chain-redis
+    ports:
+      - "6379:6379"
+    command: redis-server --appendonly yes
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    restart: unless-stopped
+    networks:
+      - supply-chain-network
+
+  redis-ui:
+    image: rediscommander/redis-commander:latest
+    platform: linux/amd64
+    container_name: supply-chain-redis-ui
+    ports:
+      - "8081:8081"
+    environment:
+      REDIS_HOSTS: local:redis:6379
+      HTTP_USER: admin
+      HTTP_PASSWORD: admin
+    depends_on:
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+    networks:
+      - supply-chain-network
+
+  flink-processor:
+    build:
+      context: ./flink-processor
+      dockerfile: Dockerfile
+    platform: linux/arm64
+    container_name: supply-chain-flink
+    environment:
+      KAFKA_BOOTSTRAP: kafka:9092
+      REDIS_URL: redis://redis:6379/0
+      USE_MOCK_ENRICHMENT: "true"
+      ENRICHMENT_ENDPOINT: http://enrichment:8080
+    depends_on:
+      kafka:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+    networks:
+      - supply-chain-network
+
 volumes:
   kafka-data:
+  redis-data:
 
 networks:
   supply-chain-network:
