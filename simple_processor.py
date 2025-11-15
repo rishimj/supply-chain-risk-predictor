@@ -16,8 +16,8 @@ import os
 # Add the flink-processor src to path
 sys.path.append('flink-processor/src')
 
-from src.models import NewsMessage, CompanyMentionEvent, CompanyFeatures
-from src.enrichment_client import MockEnrichmentClient
+from models import NewsMessage, CompanyMentionEvent, CompanyFeatures
+from enrichment_client import EnrichmentClient, MockEnrichmentClient
 
 # Setup logging
 logging.basicConfig(
@@ -29,10 +29,17 @@ logger = logging.getLogger(__name__)
 class SimpleNewsProcessor:
     """Simplified processor that mimics Flink pipeline behavior."""
     
-    def __init__(self):
+    def __init__(self, use_real_enrichment=True):
         self.kafka_brokers = ['localhost:9092']
         self.redis_client = redis.Redis(host='localhost', port=6379, decode_responses=True)
-        self.enrichment_client = MockEnrichmentClient()
+        
+        # Use real enrichment service by default
+        if use_real_enrichment:
+            self.enrichment_client = EnrichmentClient('http://localhost:8082')
+            logger.info("Using real enrichment service at http://localhost:8082")
+        else:
+            self.enrichment_client = MockEnrichmentClient()
+            logger.info("Using mock enrichment client")
         
         # Feature aggregation state (in real Flink, this would be in windows)
         self.company_features = {}

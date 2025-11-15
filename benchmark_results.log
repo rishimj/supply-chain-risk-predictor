@@ -1,0 +1,81 @@
+2025-11-15 15:06:26,177 - INFO - ✅ Connectivity verified
+2025-11-15 15:06:26,178 - INFO - Starting latency benchmark with 5 samples...
+2025-11-15 15:06:26,178 - INFO - 🕐 Measuring E2E latency with 5 samples
+2025-11-15 15:06:26,290 - INFO - ✅ Sample 1: 111.4ms total (gateway: 9.3ms, processing: 102.1ms)
+2025-11-15 15:06:26,400 - INFO - ✅ Sample 2: 110.2ms total (gateway: 7.7ms, processing: 102.5ms)
+2025-11-15 15:06:26,509 - INFO - ✅ Sample 3: 108.8ms total (gateway: 6.2ms, processing: 102.6ms)
+2025-11-15 15:06:26,620 - INFO - ✅ Sample 4: 111.1ms total (gateway: 8.0ms, processing: 103.1ms)
+2025-11-15 15:06:26,736 - INFO - ✅ Sample 5: 115.0ms total (gateway: 12.9ms, processing: 102.1ms)
+2025-11-15 15:06:26,737 - INFO - 📁 Detailed results saved to latency_results.json
+2025-11-15 15:06:29,899 - INFO - ✅ Connectivity verified
+2025-11-15 15:06:29,900 - INFO - Starting throughput benchmark for 30s with 20 workers...
+2025-11-15 15:06:29,900 - INFO - 🚀 Measuring throughput for 30s with 20 workers
+2025-11-15 15:06:59,922 - INFO - 📁 Results saved to throughput_results.json
+2025-11-15 15:07:04,207 - INFO - ✅ Connectivity verified
+2025-11-15 15:07:04,207 - INFO - Starting stress test up to 200 RPS...
+2025-11-15 15:07:04,207 - INFO - 🔥 Stress test: ramp to 200 RPS over 60s, hold for 120s
+2025-11-15 15:07:04,207 - INFO - Testing 1 RPS...
+2025-11-15 15:07:04,207 - INFO - 🚀 Measuring throughput for 10s with 1 workers
+2025-11-15 15:07:14,218 - INFO - Testing 21 RPS...
+2025-11-15 15:07:14,218 - INFO - 🚀 Measuring throughput for 10s with 21 workers
+2025-11-15 15:07:24,226 - INFO - Testing 41 RPS...
+2025-11-15 15:07:24,227 - INFO - 🚀 Measuring throughput for 10s with 41 workers
+2025-11-15 15:07:34,239 - INFO - Testing 61 RPS...
+2025-11-15 15:07:34,239 - INFO - 🚀 Measuring throughput for 10s with 61 workers
+2025-11-15 15:07:44,258 - INFO - Testing 81 RPS...
+2025-11-15 15:07:44,258 - INFO - 🚀 Measuring throughput for 10s with 81 workers
+2025-11-15 15:07:54,268 - INFO - Testing 101 RPS...
+2025-11-15 15:07:54,269 - INFO - 🚀 Measuring throughput for 10s with 101 workers
+2025-11-15 15:08:04,278 - INFO - Testing 121 RPS...
+2025-11-15 15:08:04,278 - INFO - 🚀 Measuring throughput for 10s with 121 workers
+2025-11-15 15:08:14,317 - INFO - Testing 141 RPS...
+2025-11-15 15:08:14,317 - INFO - 🚀 Measuring throughput for 10s with 141 workers
+2025-11-15 15:08:24,337 - INFO - Testing 161 RPS...
+2025-11-15 15:08:24,338 - INFO - 🚀 Measuring throughput for 10s with 161 workers
+2025-11-15 15:08:34,352 - INFO - Testing 181 RPS...
+2025-11-15 15:08:34,352 - INFO - 🚀 Measuring throughput for 10s with 181 workers
+2025-11-15 15:08:44,406 - INFO - Peak phase: 200 RPS for 120s
+2025-11-15 15:08:44,407 - INFO - 🚀 Measuring throughput for 120s with 200 workers
+2025-11-15 15:26:27,983 - INFO - ✅ Connectivity verified
+2025-11-15 15:26:28,608 - INFO - Starting latency benchmark with 3 samples...
+2025-11-15 15:26:28,608 - INFO - 🕐 Measuring E2E latency with 3 samples
+2025-11-15 15:26:28,760 - INFO - ✅ Sample 1: 151.6ms total (gateway: 38.9ms, processing: 112.6ms)
+2025-11-15 15:26:28,875 - INFO - ✅ Sample 2: 114.9ms total (gateway: 12.5ms, processing: 102.4ms)
+2025-11-15 15:26:28,996 - INFO - ✅ Sample 3: 120.9ms total (gateway: 7.5ms, processing: 113.3ms)
+2025-11-15 15:26:30,643 - INFO - 📁 Detailed results saved to latency_results.json
+2025-11-15 15:26:43,004 - INFO - ✅ Connectivity verified
+2025-11-15 15:26:43,005 - INFO - Starting throughput benchmark for 30s with 10 workers...
+2025-11-15 15:26:43,005 - INFO - 🚀 Measuring throughput for 30s with 10 workers
+2025-11-15 15:27:13,549 - INFO - 📁 Results saved to throughput_results.json
+2025-11-15 15:55:40,323 - INFO - ✅ Connectivity verified
+2025-11-15 15:55:40,324 - INFO - Starting latency benchmark with 3 samples...
+2025-11-15 15:55:40,324 - INFO - 🕐 Measuring E2E latency with 3 samples
+2025-11-15 15:55:40,919 - INFO - ✅ Sample 1: 595.1ms total (gateway: 64.9ms, processing: 530.2ms)
+2025-11-15 15:55:41,336 - INFO - ✅ Sample 2: 416.1ms total (gateway: 7.7ms, processing: 408.4ms)
+2025-11-15 15:55:41,765 - INFO - ✅ Sample 3: 428.6ms total (gateway: 7.9ms, processing: 420.7ms)
+2025-11-15 15:55:41,767 - INFO - 📁 Detailed results saved to latency_results.json
+2025-11-15 16:14:22,165 - INFO - ✅ Connectivity verified
+2025-11-15 16:14:22,166 - INFO - Starting latency benchmark with 10 samples...
+2025-11-15 16:14:22,166 - INFO - 🕐 Measuring E2E latency with 10 samples
+2025-11-15 16:14:22,619 - INFO - ✅ Sample 1: 451.8ms total (gateway: 22.9ms, processing: 428.9ms)
+2025-11-15 16:14:22,929 - INFO - ✅ Sample 2: 309.9ms total (gateway: 4.2ms, processing: 305.7ms)
+2025-11-15 16:14:23,446 - INFO - ✅ Sample 3: 516.5ms total (gateway: 4.4ms, processing: 512.1ms)
+2025-11-15 16:14:23,865 - INFO - ✅ Sample 4: 419.2ms total (gateway: 5.1ms, processing: 414.1ms)
+2025-11-15 16:14:24,278 - INFO - ✅ Sample 5: 412.9ms total (gateway: 3.5ms, processing: 409.4ms)
+2025-11-15 16:14:24,690 - INFO - ✅ Sample 6: 411.9ms total (gateway: 3.8ms, processing: 408.1ms)
+2025-11-15 16:14:25,004 - INFO - ✅ Sample 7: 313.4ms total (gateway: 6.7ms, processing: 306.7ms)
+2025-11-15 16:14:25,435 - INFO - ✅ Sample 8: 430.3ms total (gateway: 16.2ms, processing: 414.1ms)
+2025-11-15 16:14:56,498 - WARNING - ⚠️ Sample 9: Timeout waiting for processing
+2025-11-15 16:15:27,529 - WARNING - ⚠️ Sample 10: Timeout waiting for processing
+2025-11-15 16:15:27,533 - INFO - 📁 Detailed results saved to latency_results.json
+2025-11-15 16:17:18,291 - INFO - ✅ Connectivity verified
+2025-11-15 16:17:18,292 - INFO - Starting latency benchmark with 100 samples...
+2025-11-15 16:17:18,292 - INFO - 🕐 Measuring E2E latency with 100 samples
+2025-11-15 16:17:18,846 - INFO - ✅ Sample 1: 553.7ms total (gateway: 32.7ms, processing: 521.0ms)
+2025-11-15 16:17:19,262 - INFO - ✅ Sample 2: 415.5ms total (gateway: 5.2ms, processing: 410.3ms)
+2025-11-15 16:17:19,678 - INFO - ✅ Sample 3: 415.4ms total (gateway: 6.7ms, processing: 408.8ms)
+2025-11-15 16:17:20,112 - INFO - ✅ Sample 4: 433.8ms total (gateway: 4.3ms, processing: 429.5ms)
+2025-11-15 16:17:20,528 - INFO - ✅ Sample 5: 416.4ms total (gateway: 8.1ms, processing: 408.4ms)
+2025-11-15 16:17:20,949 - INFO - ✅ Sample 6: 420.1ms total (gateway: 3.5ms, processing: 416.6ms)
+2025-11-15 16:17:21,259 - INFO - ✅ Sample 7: 310.3ms total (gateway: 3.8ms, processing: 306.4ms)
+2025-11-15 16:17:21,676 - INFO - ✅ Sample 8: 416.4ms total (gateway: 4.1ms, processing: 412.3ms)

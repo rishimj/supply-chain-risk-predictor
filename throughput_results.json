@@ -1,0 +1,10 @@
+{
+  "total_requests": 11289,
+  "successful_requests": 11289,
+  "failed_requests": 0,
+  "duration_seconds": 30.00160002708435,
+  "requests_per_second": 376.2799313972822,
+  "avg_response_time_ms": 9.331498748809032,
+  "p95_response_time_ms": 21.881532669067383,
+  "p99_response_time_ms": 39.7024154663086
+}

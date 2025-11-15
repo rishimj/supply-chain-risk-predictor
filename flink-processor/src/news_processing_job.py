@@ -205,16 +205,23 @@ def create_news_processing_job():
     
     # Environment configuration
     env = StreamExecutionEnvironment.get_execution_environment()
-    env.set_parallelism(1)  # Keep simple for now
+    
+    # Add Kafka connector JARs
+    env.add_jars("file:///app/jars/flink-connector-kafka.jar")
+    env.add_jars("file:///app/jars/kafka-clients.jar")
+    
+    parallelism = int(os.getenv('FLINK_PARALLELISM', '2'))
+    env.set_parallelism(parallelism)  # Configurable parallelism
     env.enable_checkpointing(10000)  # Checkpoint every 10 seconds
     
     # Configuration from environment
     kafka_brokers = os.getenv('KAFKA_BOOTSTRAP', 'kafka:9092')
-    enrichment_url = os.getenv('ENRICHMENT_ENDPOINT', 'http://enrichment:8080')
+    enrichment_url = os.getenv('ENRICHMENT_ENDPOINT', 'http://enrichment:8082')
     redis_url = os.getenv('REDIS_URL', 'redis://redis:6379/0')
-    use_mock_enrichment = os.getenv('USE_MOCK_ENRICHMENT', 'true').lower() == 'true'
+    use_mock_enrichment = os.getenv('USE_MOCK_ENRICHMENT', 'false').lower() == 'true'
     
     logger.info(f"Starting job with config:")
+    logger.info(f"  Parallelism: {parallelism}")
     logger.info(f"  Kafka: {kafka_brokers}")
     logger.info(f"  Enrichment: {enrichment_url} (mock: {use_mock_enrichment})")
     logger.info(f"  Redis: {redis_url}")
@@ -222,8 +229,8 @@ def create_news_processing_job():
     # Kafka consumer for raw news
     kafka_props = {
         'bootstrap.servers': kafka_brokers,
-        'group.id': 'news-processor',
-        'auto.offset.reset': 'earliest'  # Process from beginning
+        'group.id': 'flink-processor',  # Different group than stream processor
+        'auto.offset.reset': 'latest'   # Process new messages
     }
     
     news_consumer = FlinkKafkaConsumer(
@@ -232,15 +239,15 @@ def create_news_processing_job():
         properties=kafka_props
     )
     
-    # Set watermark strategy for event time processing
-    news_consumer.assign_timestamps_and_watermarks(
+    # Create the pipeline
+    news_stream = env.add_source(news_consumer).name("kafka_source")
+    
+    # Set watermark strategy for event time processing (newer API)
+    news_stream = news_stream.assign_timestamps_and_watermarks(
         WatermarkStrategy
         .for_bounded_out_of_orderness(Time.minutes(5))
         .with_timestamp_assigner(lambda element, timestamp: int(datetime.utcnow().timestamp() * 1000))
     )
-    
-    # Create the pipeline
-    news_stream = env.add_source(news_consumer).name("kafka_source")
     
     # Step 1: Enrich news with company mentions
     mentions_stream = (news_stream

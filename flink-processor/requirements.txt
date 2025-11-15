@@ -1,18 +1,18 @@
-# Flink and streaming
+# Flink and streaming (using known working version for Python 3.10)
 apache-flink==1.18.1
 
 # Kafka integration
 kafka-python==2.0.2
 
-# Redis integration
-redis==5.0.0
+# Redis integration  
+redis==5.0.1
 
 # HTTP client for enrichment API
-aiohttp==3.9.1
+aiohttp==3.9.5
 requests==2.31.0
 
 # JSON and data processing
-pydantic==2.5.0
+pydantic==2.5.3
 ujson==5.8.0
 
 # Utilities

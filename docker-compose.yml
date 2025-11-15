@@ -67,6 +67,28 @@ services:
     networks:
       - supply-chain-network
 
+  enrichment:
+    build:
+      context: ./enrichment-py
+      dockerfile: Dockerfile
+    container_name: supply-chain-enrichment
+    ports:
+      - "8082:8082"
+      - "9102:9102" # Prometheus metrics
+    environment:
+      PORT: 8082
+      PROM_PORT: 9102
+      SERVICE_ENV: production
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8082/healthz"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+    restart: unless-stopped
+    networks:
+      - supply-chain-network
+
   kafka-ui:
     image: provectuslabs/kafka-ui:latest
     platform: linux/amd64
@@ -119,6 +141,30 @@ services:
     networks:
       - supply-chain-network
 
+  # Lightweight stream processor (disabled - using Flink instead)
+  # stream-processor:
+  #   build:
+  #     context: ./stream-processor
+  #     dockerfile: Dockerfile
+  #   platform: linux/arm64
+  #   container_name: supply-chain-stream-processor
+  #   environment:
+  #     KAFKA_BOOTSTRAP: kafka:9092
+  #     REDIS_URL: redis://redis:6379/0
+  #     ENRICHMENT_ENDPOINT: http://enrichment:8082
+  #     SERVICE_ENV: production
+  #   depends_on:
+  #     kafka:
+  #       condition: service_healthy
+  #     redis:
+  #       condition: service_healthy
+  #     enrichment:
+  #       condition: service_healthy
+  #   restart: unless-stopped
+  #   networks:
+  #     - supply-chain-network
+
+  # Flink processor for advanced stream processing
   flink-processor:
     build:
       context: ./flink-processor
@@ -128,16 +174,22 @@ services:
     environment:
       KAFKA_BOOTSTRAP: kafka:9092
       REDIS_URL: redis://redis:6379/0
-      USE_MOCK_ENRICHMENT: "true"
-      ENRICHMENT_ENDPOINT: http://enrichment:8080
+      USE_MOCK_ENRICHMENT: "true"  # Start with mock for testing
+      ENRICHMENT_ENDPOINT: http://enrichment:8082
+      SERVICE_ENV: production
+      FLINK_PARALLELISM: 2
     depends_on:
       kafka:
         condition: service_healthy
       redis:
         condition: service_healthy
+      enrichment:
+        condition: service_healthy
     restart: unless-stopped
     networks:
       - supply-chain-network
+    ports:
+      - "8083:8080"  # Expose Flink web UI if available
 
 volumes:
   kafka-data:
