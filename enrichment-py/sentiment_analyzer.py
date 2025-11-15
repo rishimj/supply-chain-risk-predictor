@@ -36,6 +36,7 @@ class SentimentModel(Enum):
     DISTILBERT_FINANCIAL = "distilbert_financial"
     VADER = "vader"
     TEXTBLOB = "textblob"
+    TIERED = "tiered"
 
 
 @dataclass
@@ -54,7 +55,7 @@ class SupplyChainSentimentAnalyzer:
     Combines multiple models and domain-specific heuristics.
     """
     
-    def __init__(self, model_type: SentimentModel = SentimentModel.DISTILBERT_FINANCIAL):
+    def __init__(self, model_type: SentimentModel = SentimentModel.TIERED):
         """
         Initialize the sentiment analyzer.
         
@@ -119,6 +120,14 @@ class SupplyChainSentimentAnalyzer:
                     self._vader_analyzer = SentimentIntensityAnalyzer()
                 else:
                     logger.warning("VADER not available")
+            
+            elif self.model_type == SentimentModel.TIERED:
+                # Initialize both models for tiered approach
+                if TRANSFORMERS_AVAILABLE:
+                    self._initialize_distilbert_financial()
+                if VADER_AVAILABLE:
+                    self._vader_analyzer = SentimentIntensityAnalyzer()
+                logger.info("Initialized tiered sentiment analysis: DistilBERT + VADER")
             
         except Exception as e:
             logger.warning(f"Error initializing models: {e}, falling back to basic analysis")
@@ -189,30 +198,57 @@ class SupplyChainSentimentAnalyzer:
         # Extract supply chain context
         supply_context = self._extract_supply_chain_context(text)
         
-        # Get sentiment from selected model
+        # Choose analysis approach based on model type
         sentiment_scores = []
         confidences = []
         models_used = []
         
-        # DistilBERT Financial (fast and accurate for financial content)
-        if self._distilbert_pipeline:
-            try:
-                distilbert_result = await self._analyze_with_distilbert(text)
-                sentiment_scores.append(distilbert_result[0])
-                confidences.append(distilbert_result[1])
-                models_used.append("distilbert_financial")
-            except Exception as e:
-                logger.warning(f"DistilBERT analysis failed: {e}")
+        if self.model_type == SentimentModel.TIERED:
+            # Tiered approach: decide which model to use
+            use_distilbert = self._should_use_distilbert(text, company_context)
+            
+            if use_distilbert and self._distilbert_pipeline:
+                try:
+                    distilbert_result = await self._analyze_with_distilbert(text)
+                    sentiment_scores.append(distilbert_result[0])
+                    confidences.append(distilbert_result[1])
+                    models_used.append("distilbert_financial")
+                except Exception as e:
+                    logger.warning(f"DistilBERT analysis failed, falling back to VADER: {e}")
+                    if self._vader_analyzer:
+                        vader_result = self._analyze_with_vader(text)
+                        sentiment_scores.append(vader_result[0])
+                        confidences.append(vader_result[1])
+                        models_used.append("vader_fallback")
+            else:
+                # Use fast VADER for bulk processing
+                if self._vader_analyzer:
+                    vader_result = self._analyze_with_vader(text)
+                    sentiment_scores.append(vader_result[0])
+                    confidences.append(vader_result[1])
+                    models_used.append("vader_fast")
         
-        # VADER (fast fallback)
-        if self._vader_analyzer and len(sentiment_scores) == 0:
-            try:
-                vader_result = self._analyze_with_vader(text)
-                sentiment_scores.append(vader_result[0])
-                confidences.append(vader_result[1])
-                models_used.append("vader")
-            except Exception as e:
-                logger.warning(f"VADER analysis failed: {e}")
+        elif self.model_type == SentimentModel.DISTILBERT_FINANCIAL:
+            # DistilBERT Financial (fast and accurate for financial content)
+            if self._distilbert_pipeline:
+                try:
+                    distilbert_result = await self._analyze_with_distilbert(text)
+                    sentiment_scores.append(distilbert_result[0])
+                    confidences.append(distilbert_result[1])
+                    models_used.append("distilbert_financial")
+                except Exception as e:
+                    logger.warning(f"DistilBERT analysis failed: {e}")
+        
+        elif self.model_type == SentimentModel.VADER:
+            # VADER (fast fallback)
+            if self._vader_analyzer:
+                try:
+                    vader_result = self._analyze_with_vader(text)
+                    sentiment_scores.append(vader_result[0])
+                    confidences.append(vader_result[1])
+                    models_used.append("vader")
+                except Exception as e:
+                    logger.warning(f"VADER analysis failed: {e}")
         
         # TextBlob (fallback)
         if TEXTBLOB_AVAILABLE and len(sentiment_scores) == 0:
@@ -291,15 +327,64 @@ class SupplyChainSentimentAnalyzer:
         confidence = abs(sentiment_score)  # Simple confidence measure
         
         return sentiment_score, confidence
+    
+    def _should_use_distilbert(self, text: str, company_context: str = "") -> bool:
+        """
+        Decide whether to use DistilBERT or fast VADER based on content analysis.
+        
+        Args:
+            text: Text to analyze
+            company_context: Company ticker context
+            
+        Returns:
+            True if DistilBERT should be used, False for VADER
+        """
+        text_lower = text.lower()
+        
+        # Use DistilBERT for critical financial events
+        critical_keywords = [
+            'earnings', 'quarterly', 'profit', 'loss', 'revenue', 'guidance',
+            'bankruptcy', 'acquisition', 'merger', 'ipo', 'dividend',
+            'ceo', 'cfo', 'management', 'board', 'resignation'
+        ]
+        
+        # Use DistilBERT for major supply chain events
+        critical_supply_chain = [
+            'supply chain disruption', 'factory closure', 'semiconductor shortage',
+            'raw material shortage', 'logistics crisis', 'port congestion',
+            'manufacturing halt', 'critical shortage'
+        ]
+        
+        # Use DistilBERT for major companies (more impact)
+        major_companies = {
+            'AAPL', 'MSFT', 'GOOGL', 'AMZN', 'TSLA', 'META', 'NVDA',
+            'JPM', 'JNJ', 'V', 'PG', 'UNH', 'HD', 'MA'
+        }
+        
+        # Check for critical content
+        for keyword in critical_keywords + critical_supply_chain:
+            if keyword in text_lower:
+                return True
+        
+        # Check if it's a major company
+        if company_context and company_context.upper() in major_companies:
+            return True
+        
+        # Check text length - use DistilBERT for longer, more complex content
+        if len(text) > 200:
+            return True
+        
+        # Default to fast VADER for routine news
+        return False
 
 
 # Factory function for easy instantiation
-def create_sentiment_analyzer(model_type: str = "distilbert_financial") -> SupplyChainSentimentAnalyzer:
+def create_sentiment_analyzer(model_type: str = "tiered") -> SupplyChainSentimentAnalyzer:
     """
     Create a sentiment analyzer with the specified model type.
     
     Args:
-        model_type: One of 'distilbert_financial', 'vader', 'textblob'
+        model_type: One of 'tiered', 'distilbert_financial', 'vader', 'textblob'
         
     Returns:
         Configured sentiment analyzer

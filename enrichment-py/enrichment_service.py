@@ -18,9 +18,9 @@ class EnrichmentService:
     """Core enrichment service for detecting companies and analyzing sentiment."""
     
     def __init__(self):
-        # Initialize lightweight DistilBERT sentiment analyzer
-        self.sentiment_analyzer = create_sentiment_analyzer("distilbert_financial")
-        logger.info(f"Initialized enrichment service with DistilBERT financial model and {len(KEYWORD_TO_TICKER)} company keywords")
+        # Initialize tiered sentiment analyzer (DistilBERT + VADER)
+        self.sentiment_analyzer = create_sentiment_analyzer("tiered")
+        logger.info(f"Initialized enrichment service with tiered sentiment analysis and {len(KEYWORD_TO_TICKER)} company keywords")
     
     async def enrich_news(self, request: EnrichmentRequest) -> List[CompanyMention]:
         """
@@ -107,14 +107,14 @@ class EnrichmentService:
             Sentiment score between -1.0 and +1.0
         """
         try:
-            # Use lightweight DistilBERT for fast financial sentiment analysis
+            # Use tiered sentiment analysis (DistilBERT for critical, VADER for routine)
             result = await self.sentiment_analyzer.analyze_sentiment(
                 text=text,
                 company_context=ticker
             )
             
             # Log sentiment details for debugging
-            logger.debug(f"DistilBERT sentiment for {ticker}: {result.sentiment_score:.3f} "
+            logger.debug(f"Tiered sentiment for {ticker}: {result.sentiment_score:.3f} "
                         f"(confidence: {result.confidence:.3f}, model: {result.model_used})")
             
             if result.reasoning:
