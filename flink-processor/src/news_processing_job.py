@@ -13,13 +13,14 @@ from pyflink.datastream import StreamExecutionEnvironment
 from pyflink.datastream.connectors import FlinkKafkaConsumer
 from pyflink.common.serialization import SimpleStringSchema
 from pyflink.common.time import Time
-from pyflink.datastream.window import SlidingEventTimeWindows
+from pyflink.datastream.window import TumblingEventTimeWindows
 from pyflink.common.watermark_strategy import WatermarkStrategy
 from pyflink.datastream.functions import ProcessFunction, ProcessAllWindowFunction, SinkFunction
 import redis
 
 from models import NewsMessage, CompanyMentionEvent, CompanyFeatures
 from enrichment_client import EnrichmentClient, MockEnrichmentClient
+from alerting import create_alert_manager, AlertManager
 
 
 logger = logging.getLogger(__name__)
@@ -102,13 +103,45 @@ class FeatureAggregator:
         self.sentiment_count += 1
     
     def get_features(self, ticker: str, window_end: datetime) -> CompanyFeatures:
-        """Get the aggregated features."""
+        """Get the aggregated features for 5-minute window."""
+        # Calculate overall sentiment score for this 5-minute window
+        overall_sentiment = round(self.sentiment_ewm, 3) if self.sentiment_count > 0 else 0.0
+        
+        # Calculate supply chain risk score based on sentiment and counts
+        # Risk factors:
+        # - More negative sentiment = higher risk
+        # - More total mentions = higher impact
+        # - Supply chain keywords already weighted in sentiment analysis
+        
+        if self.sentiment_count == 0:
+            risk_score = 0.0  # No news = no risk
+        else:
+            # Base risk from sentiment: -1.0 sentiment = 1.0 risk, +1.0 sentiment = 0.0 risk
+            sentiment_risk = max(0.0, min(1.0, (1.0 - overall_sentiment) / 2.0))
+            
+            # Volume amplifier: more mentions = higher impact
+            total_mentions = self.neg_count + self.pos_count
+            volume_multiplier = min(1.5, 1.0 + (total_mentions - 1) * 0.1)  # Cap at 1.5x
+            
+            # Negative bias: if mostly negative mentions, increase risk
+            if total_mentions > 0:
+                negative_ratio = self.neg_count / total_mentions
+                negative_bias = 1.0 + (negative_ratio - 0.5) * 0.5  # 0.75x to 1.25x
+            else:
+                negative_bias = 1.0
+            
+            # Final risk score
+            risk_score = min(1.0, sentiment_risk * volume_multiplier * negative_bias)
+            
+        risk_score = round(risk_score, 3)
+        
         return CompanyFeatures(
             ticker=ticker,
             window_end=window_end.isoformat() + "Z",
-            neg_news_count_24h=self.neg_count,
-            pos_news_count_24h=self.pos_count,
-            sentiment_ewm_7d=round(self.sentiment_ewm, 3) if self.sentiment_count > 0 else 0.0
+            neg_news_count_5m=self.neg_count,
+            pos_news_count_5m=self.pos_count,
+            sentiment_score_5m=overall_sentiment,
+            risk_score_5m=risk_score
         )
 
 
@@ -144,8 +177,65 @@ class CompanyFeaturesWindowFunction(ProcessAllWindowFunction):
         
         for ticker, aggregator in ticker_aggregators.items():
             features = aggregator.get_features(ticker, window_end)
-            logger.info(f"Features for {ticker}: pos={features.pos_news_count_24h}, neg={features.neg_news_count_24h}, ewm={features.sentiment_ewm_7d}")
+            logger.info(f"5-min Features for {ticker}: pos={features.pos_news_count_5m}, neg={features.neg_news_count_5m}, sentiment={features.sentiment_score_5m}, risk={features.risk_score_5m}")
             out.collect(features.to_json())
+
+
+class AlertingSink(SinkFunction):
+    """Sink that processes features for risk alerting."""
+    
+    def __init__(self, slack_webhook_url: str, alert_config: dict):
+        self.slack_webhook_url = slack_webhook_url
+        self.alert_config = alert_config
+        self.alert_manager = None
+    
+    def open(self, configuration):
+        """Initialize alert manager."""
+        try:
+            if self.slack_webhook_url and self.slack_webhook_url != "disabled":
+                self.alert_manager = create_alert_manager(
+                    webhook_url=self.slack_webhook_url,
+                    channel=self.alert_config.get("channel", "#supply-chain-alerts"),
+                    company_thresholds=self.alert_config.get("company_thresholds", {}),
+                    default_threshold=self.alert_config.get("default_threshold", 0.8),
+                    cooldown_minutes=self.alert_config.get("cooldown_minutes", 30)
+                )
+                logger.info(f"Alert manager initialized with Slack webhook")
+            else:
+                logger.info("Alerting disabled - no webhook URL configured")
+        except Exception as e:
+            logger.error(f"Failed to initialize alert manager: {e}")
+    
+    def invoke(self, value: str, context):
+        """Process features and check for alerts."""
+        if not self.alert_manager:
+            return  # Alerting disabled
+            
+        try:
+            features_dict = json.loads(value)
+            features = CompanyFeatures(
+                ticker=features_dict['ticker'],
+                window_end=features_dict['window_end'],
+                neg_news_count_5m=features_dict['neg_news_count_5m'],
+                pos_news_count_5m=features_dict['pos_news_count_5m'],
+                sentiment_score_5m=features_dict['sentiment_score_5m'],
+                risk_score_5m=features_dict['risk_score_5m']
+            )
+            
+            # Process alert asynchronously (in a sync context, we'll use asyncio.run)
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            try:
+                alert_sent = loop.run_until_complete(self.alert_manager.process_features(features))
+                if alert_sent:
+                    logger.info(f"🚨 ALERT SENT: {features.ticker} risk_score={features.risk_score_5m:.3f}")
+                else:
+                    logger.debug(f"No alert: {features.ticker} risk_score={features.risk_score_5m:.3f}")
+            finally:
+                loop.close()
+                
+        except Exception as e:
+            logger.error(f"Error processing alert for features: {e}")
 
 
 class RedisFeatureSink(SinkFunction):
@@ -189,7 +279,11 @@ class RedisFeatureSink(SinkFunction):
             # Set with 7 day TTL
             self.redis_client.setex(key, timedelta(days=7), json.dumps(redis_value))
             
-            logger.info(f"Written to Redis: {key} -> {redis_value}")
+            # Also set latest key for easy access
+            latest_key = f"feat:{ticker}:latest"
+            self.redis_client.setex(latest_key, timedelta(days=7), json.dumps(redis_value))
+            
+            logger.info(f"Written to Redis: {key} and {latest_key} -> risk_score={redis_value.get('risk_score_5m', 'N/A')}")
             
         except Exception as e:
             logger.error(f"Error writing to Redis: {e}")
@@ -220,11 +314,28 @@ def create_news_processing_job():
     redis_url = os.getenv('REDIS_URL', 'redis://redis:6379/0')
     use_mock_enrichment = os.getenv('USE_MOCK_ENRICHMENT', 'false').lower() == 'true'
     
+    # Alerting configuration
+    slack_webhook_url = os.getenv('SLACK_WEBHOOK_URL', 'disabled')
+    alert_config = {
+        "channel": os.getenv('SLACK_CHANNEL', '#supply-chain-alerts'),
+        "company_thresholds": {
+            "AAPL": float(os.getenv('ALERT_THRESHOLD_AAPL', '0.7')),
+            "TSLA": float(os.getenv('ALERT_THRESHOLD_TSLA', '0.6')),
+            "MSFT": float(os.getenv('ALERT_THRESHOLD_MSFT', '0.75')),
+            "GOOGL": float(os.getenv('ALERT_THRESHOLD_GOOGL', '0.8')),
+            "AMZN": float(os.getenv('ALERT_THRESHOLD_AMZN', '0.75'))
+        },
+        "default_threshold": float(os.getenv('ALERT_THRESHOLD_DEFAULT', '0.8')),
+        "cooldown_minutes": int(os.getenv('ALERT_COOLDOWN_MINUTES', '30'))
+    }
+    
     logger.info(f"Starting job with config:")
     logger.info(f"  Parallelism: {parallelism}")
     logger.info(f"  Kafka: {kafka_brokers}")
     logger.info(f"  Enrichment: {enrichment_url} (mock: {use_mock_enrichment})")
     logger.info(f"  Redis: {redis_url}")
+    logger.info(f"  Slack Alerts: {'enabled' if slack_webhook_url != 'disabled' else 'disabled'}")
+    logger.info(f"  Alert Thresholds: {alert_config['company_thresholds']}")
     
     # Kafka consumer for raw news
     kafka_props = {
@@ -254,9 +365,9 @@ def create_news_processing_job():
                       .process(NewsEnrichmentFunction(enrichment_url, use_mock_enrichment))
                       .name("enrich_news"))
     
-    # Step 2: Aggregate features using sliding windows (24h window, 5min slide)
+    # Step 2: Aggregate features using tumbling windows (5min windows, no overlap)
     features_stream = (mentions_stream
-                      .window_all(SlidingEventTimeWindows.of(Time.hours(24), Time.minutes(5)))
+                      .window_all(TumblingEventTimeWindows.of(Time.minutes(5)))
                       .process(CompanyFeaturesWindowFunction())
                       .name("aggregate_features"))
     

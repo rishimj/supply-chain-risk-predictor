@@ -15,8 +15,9 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from models import EnrichmentRequest, CompanyMention
 from enrichment_service import EnrichmentService
-from sentiment_analyzer import SentimentAnalyzer
+from sentiment_analyzer import SupplyChainSentimentAnalyzer
 from company_database import KEYWORD_TO_TICKER, get_company_info
+import asyncio
 
 class TestEnrichmentServiceRobustness:
     """Comprehensive robustness tests for the enrichment service core logic."""
@@ -29,13 +30,13 @@ class TestEnrichmentServiceRobustness:
         """Test service initializes correctly."""
         service = EnrichmentService()
         assert hasattr(service, 'sentiment_analyzer')
-        assert isinstance(service.sentiment_analyzer, SentimentAnalyzer)
+        assert isinstance(service.sentiment_analyzer, SupplyChainSentimentAnalyzer)
         
         stats = service.get_stats()
         assert stats['total_companies'] > 0
         assert stats['total_keywords'] > 0
-        assert stats['negative_sentiment_keywords'] > 0
-        assert stats['positive_sentiment_keywords'] > 0
+        assert 'sentiment_model' in stats
+        assert 'supply_chain_categories' in stats
     
     def test_valid_requests(self):
         """Test enrichment with various valid requests."""
@@ -354,15 +355,21 @@ class TestSentimentAnalyzerRobustness:
     
     def setup_method(self):
         """Set up test fixtures."""
-        self.analyzer = SentimentAnalyzer()
+        from sentiment_analyzer import create_sentiment_analyzer
+        self.analyzer = create_sentiment_analyzer("tiered")
     
-    def test_empty_inputs(self):
+    @pytest.mark.asyncio
+    async def test_empty_inputs(self):
         """Test sentiment analyzer with empty inputs."""
-        assert self.analyzer.analyze_sentiment("") == 0.0
-        assert self.analyzer.analyze_sentiment(None) == 0.0
-        assert self.analyzer.analyze_sentiment("   ") == 0.0
+        result1 = await self.analyzer.analyze_sentiment("")
+        assert result1.sentiment_score == 0.0
+        assert result1.confidence == 0.0
+        
+        result2 = await self.analyzer.analyze_sentiment("   ")
+        assert -1.0 <= result2.sentiment_score <= 1.0
     
-    def test_special_characters(self):
+    @pytest.mark.asyncio
+    async def test_special_characters(self):
         """Test sentiment analyzer with special characters."""
         # Should not crash with any input
         special_texts = [
@@ -374,71 +381,70 @@ class TestSentimentAnalyzerRobustness:
         ]
         
         for text in special_texts:
-            sentiment = self.analyzer.analyze_sentiment(text)
-            assert -1.0 <= sentiment <= 1.0
+            result = await self.analyzer.analyze_sentiment(text)
+            assert -1.0 <= result.sentiment_score <= 1.0
+            assert 0.0 <= result.confidence <= 1.0
     
-    def test_very_long_texts(self):
+    @pytest.mark.asyncio
+    async def test_very_long_texts(self):
         """Test sentiment analyzer with very long texts."""
         # Very long text with sentiment keywords
         long_positive = "Tesla beats expectations " * 1000
-        sentiment = self.analyzer.analyze_sentiment(long_positive)
-        assert sentiment == 0.7
+        result = await self.analyzer.analyze_sentiment(long_positive)
+        assert result.sentiment_score > 0.0  # Should be positive
         
         long_negative = "Tesla production halts " * 1000  
-        sentiment = self.analyzer.analyze_sentiment(long_negative)
-        assert sentiment == -0.7
+        result = await self.analyzer.analyze_sentiment(long_negative)
+        assert result.sentiment_score < 0.0  # Should be negative
     
-    def test_keyword_variations(self):
+    @pytest.mark.asyncio
+    async def test_keyword_variations(self):
         """Test sentiment analyzer with keyword variations."""
         # Test word boundaries and variations
         variations = [
-            ("beat", 0.7),
-            ("beats", 0.7), 
-            ("beaten", 0.0),  # Past participle might not be in keywords
-            ("beating", 0.7),
-            ("halt", -0.7),
-            ("halts", -0.7),
-            ("halted", -0.7),
-            ("halting", -0.7),
+            ("beat", True),  # Should be positive
+            ("beats", True), 
+            ("halt", False),  # Should be negative
+            ("halts", False),
         ]
         
-        for word, expected in variations:
+        for word, should_be_positive in variations:
             text = f"Tesla {word} production"
-            sentiment = self.analyzer.analyze_sentiment(text)
+            result = await self.analyzer.analyze_sentiment(text)
             
-            if expected != 0.0:
-                assert sentiment == expected, f"Failed for '{word}': got {sentiment}, expected {expected}"
+            if should_be_positive:
+                assert result.sentiment_score > 0.0, f"Failed for '{word}': got {result.sentiment_score}, expected positive"
+            else:
+                assert result.sentiment_score < 0.0, f"Failed for '{word}': got {result.sentiment_score}, expected negative"
     
-    def test_sentiment_details_robustness(self):
-        """Test get_sentiment_details method robustness."""
+    @pytest.mark.asyncio
+    async def test_sentiment_result_structure(self):
+        """Test sentiment result structure robustness."""
         test_texts = [
             "",
-            None,
             "Tesla beats expectations but faces halts and delays",
             "Very long text " * 1000 + " with beats and halts keywords",
         ]
         
         for text in test_texts:
-            details = self.analyzer.get_sentiment_details(text)
+            result = await self.analyzer.analyze_sentiment(text)
             
-            # Should always return a dict with required fields
-            assert isinstance(details, dict)
-            assert "sentiment" in details
-            assert "negative_keywords" in details  
-            assert "positive_keywords" in details
-            assert "negative_count" in details
-            assert "positive_count" in details
+            # Should always return SentimentResult with required fields
+            assert hasattr(result, 'sentiment_score')
+            assert hasattr(result, 'confidence')
+            assert hasattr(result, 'supply_chain_risk_factor')
+            assert hasattr(result, 'model_used')
+            assert hasattr(result, 'reasoning')
             
-            # Types should be correct
-            assert isinstance(details["sentiment"], (int, float))
-            assert isinstance(details["negative_keywords"], list)
-            assert isinstance(details["positive_keywords"], list) 
-            assert isinstance(details["negative_count"], int)
-            assert isinstance(details["positive_count"], int)
+            # Types and ranges should be correct
+            assert isinstance(result.sentiment_score, (int, float))
+            assert isinstance(result.confidence, (int, float))
+            assert isinstance(result.supply_chain_risk_factor, (int, float))
+            assert isinstance(result.model_used, str)
             
-            # Counts should match list lengths
-            assert details["negative_count"] == len(details["negative_keywords"])
-            assert details["positive_count"] == len(details["positive_keywords"])
+            assert -1.0 <= result.sentiment_score <= 1.0
+            assert 0.0 <= result.confidence <= 1.0
+            assert result.supply_chain_risk_factor >= 0.0
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

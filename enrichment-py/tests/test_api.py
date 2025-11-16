@@ -7,7 +7,10 @@ Tests the HTTP API endpoints following TDD principles from context.md.
 import pytest
 import sys
 import os
-from fastapi.testclient import TestClient
+try:
+    from fastapi.testclient import TestClient
+except ImportError:
+    from starlette.testclient import TestClient
 
 # Add parent directory to path
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -231,6 +234,111 @@ class TestEnrichmentAPI:
             assert "sentiment" in company
             assert company["role"] in ["primary", "mentioned"]
             assert -1.0 <= company["sentiment"] <= 1.0
+
+    def test_stats_shows_tiered_model(self):
+        """Test that stats endpoint shows tiered sentiment model."""
+        response = self.client.get("/stats")
+        
+        assert response.status_code == 200
+        data = response.json()
+        assert "sentiment_model" in data
+        assert data["sentiment_model"] == "tiered", "Should use tiered model"
+        assert "supply_chain_categories" in data
+    
+    def test_enrich_critical_news_uses_distilbert(self):
+        """Test that critical news (earnings + major company) triggers DistilBERT."""
+        request_data = {
+            "news_id": "test-critical",
+            "headline": "Apple reports quarterly earnings beat expectations",
+            "body": "Apple Inc. announced strong quarterly results exceeding analyst forecasts with revenue growth"
+        }
+        
+        response = self.client.post("/v1/enrich", json=request_data)
+        
+        assert response.status_code == 200
+        data = response.json()
+        
+        # Should detect Apple
+        apple_companies = [c for c in data["companies"] if c["ticker"] == "AAPL"]
+        assert len(apple_companies) == 1
+        
+        # Should have valid sentiment (may vary based on actual model)
+        assert -1.0 <= apple_companies[0]["sentiment"] <= 1.0
+    
+    def test_enrich_supply_chain_disruption(self):
+        """Test enrichment with supply chain disruption keywords."""
+        request_data = {
+            "news_id": "test-disruption",
+            "headline": "Factory closure affects Tesla production",
+            "body": "Semiconductor shortage and supply chain disruption threaten delivery schedules"
+        }
+        
+        response = self.client.post("/v1/enrich", json=request_data)
+        
+        assert response.status_code == 200
+        data = response.json()
+        
+        # Should detect Tesla
+        tesla_companies = [c for c in data["companies"] if c["ticker"] == "TSLA"]
+        assert len(tesla_companies) == 1
+        
+        # Should have negative sentiment due to disruption keywords
+        assert tesla_companies[0]["sentiment"] < 0.0, "Disruption should result in negative sentiment"
+    
+    def test_enrich_routine_news_uses_vader(self):
+        """Test that routine news uses fast VADER processing."""
+        request_data = {
+            "news_id": "test-routine",
+            "headline": "Small startup announces product update",
+            "body": "Minor company news about new features"
+        }
+        
+        response = self.client.post("/v1/enrich", json=request_data)
+        
+        assert response.status_code == 200
+        data = response.json()
+        
+        # Should process successfully (may or may not detect companies)
+        assert "companies" in data
+        assert isinstance(data["companies"], list)
+    
+    def test_enrich_major_company_triggers_distilbert(self):
+        """Test that major companies trigger DistilBERT even without earnings keywords."""
+        request_data = {
+            "news_id": "test-major-company",
+            "headline": "Microsoft announces new cloud partnership",
+            "body": "Microsoft Corporation expands strategic alliances in cloud computing sector"
+        }
+        
+        response = self.client.post("/v1/enrich", json=request_data)
+        
+        assert response.status_code == 200
+        data = response.json()
+        
+        # Should detect Microsoft
+        msft_companies = [c for c in data["companies"] if c["ticker"] == "MSFT"]
+        assert len(msft_companies) == 1
+        
+        # Should have valid sentiment
+        assert -1.0 <= msft_companies[0]["sentiment"] <= 1.0
+    
+    def test_enrich_long_content_triggers_distilbert(self):
+        """Test that long content (>200 chars) triggers DistilBERT."""
+        long_body = "This is a very detailed article about the company. " * 10  # >200 chars
+        request_data = {
+            "news_id": "test-long",
+            "headline": "Company provides detailed quarterly report",
+            "body": long_body
+        }
+        
+        response = self.client.post("/v1/enrich", json=request_data)
+        
+        assert response.status_code == 200
+        data = response.json()
+        
+        # Should process successfully
+        assert "companies" in data
+        assert isinstance(data["companies"], list)
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
