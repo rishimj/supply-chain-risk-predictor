@@ -140,11 +140,11 @@ class RiskAlert:
 
 
 class AlertThresholdChecker:
-    """Checks if risk scores exceed configured thresholds and manages cooldowns."""
+    """Checks if risk scores exceed configured thresholds and manages cooldowns via Redis."""
     
-    def __init__(self, config: AlertConfig):
+    def __init__(self, config: AlertConfig, redis_client=None):
         self.config = config
-        self._last_alerts: Dict[str, datetime] = {}  # ticker -> last alert time
+        self.redis_client = redis_client
     
     def should_trigger_alert(self, features: CompanyFeatures) -> bool:
         """Check if an alert should be triggered for the given features."""
@@ -152,31 +152,55 @@ class AlertThresholdChecker:
         risk_score = features.risk_score_5m
         threshold = self.config.get_threshold(ticker)
         
-        # Check if risk score exceeds threshold
+        # Check 1: Risk score exceeds threshold?
         if risk_score <= threshold:
             return False
             
-        # Check cooldown period
-        if self._is_in_cooldown(ticker):
+        # Check 2: In cooldown? (check Redis)
+        if self._is_in_cooldown_redis(ticker):
             return False
             
         return True
     
-    def _is_in_cooldown(self, ticker: str) -> bool:
-        """Check if ticker is in cooldown period."""
-        if ticker not in self._last_alerts:
+    def _is_in_cooldown_redis(self, ticker: str) -> bool:
+        """Check Redis for cooldown key."""
+        if not self.redis_client:
+            logger.warning("No Redis client, skipping cooldown check")
+            return False
+        
+        try:
+            key = f"alert:last_sent:{ticker}"
+            exists = self.redis_client.exists(key)
+            
+            if exists:
+                # Log when alert was last sent
+                last_sent = self.redis_client.get(key)
+                logger.debug(f"{ticker} in cooldown, last alert: {last_sent}")
+                return True
             return False
             
-        last_alert = self._last_alerts[ticker]
-        cooldown_period = timedelta(minutes=self.config.cooldown_minutes)
-        
-        return datetime.utcnow() < (last_alert + cooldown_period)
+        except Exception as e:
+            logger.error(f"Redis cooldown check failed for {ticker}: {e}")
+            return False  # Fail safe: allow alert on Redis error
     
     def record_alert(self, ticker: str, alert_time: Optional[datetime] = None) -> None:
-        """Record that an alert was sent for cooldown tracking."""
-        if alert_time is None:
-            alert_time = datetime.utcnow()
-        self._last_alerts[ticker] = alert_time
+        """Record alert in Redis with TTL based on cooldown period."""
+        if not self.redis_client:
+            logger.warning("No Redis client, cannot record alert")
+            return
+        
+        try:
+            key = f"alert:last_sent:{ticker}"
+            if alert_time is None:
+                alert_time = datetime.utcnow()
+            value = alert_time.isoformat() + "Z"
+            ttl_seconds = self.config.cooldown_minutes * 60  # Convert minutes to seconds
+            
+            self.redis_client.setex(key, ttl_seconds, value)
+            logger.info(f"Recorded alert for {ticker}, cooldown for {ttl_seconds}s")
+            
+        except Exception as e:
+            logger.error(f"Failed to record alert in Redis for {ticker}: {e}")
     
     def create_alert(self, features: CompanyFeatures) -> RiskAlert:
         """Create a RiskAlert from CompanyFeatures."""
@@ -290,17 +314,17 @@ class AlertManager:
         """Get alerting system statistics."""
         return {
             "alerts_sent": self._alerts_sent,
-            "alerts_suppressed": self._alerts_suppressed,
-            "active_cooldowns": len(self.threshold_checker._last_alerts)
+            "alerts_suppressed": self._alerts_suppressed
         }
 
 
 # Factory function for easy setup
 def create_alert_manager(webhook_url: str, channel: str = "#supply-chain-alerts",
                         company_thresholds: Optional[Dict[str, float]] = None,
-                        default_threshold: float = 0.8,
-                        cooldown_minutes: int = 30) -> AlertManager:
-    """Create a fully configured alert manager."""
+                        default_threshold: float = 0.7,
+                        cooldown_minutes: int = 30,
+                        redis_client=None) -> AlertManager:
+    """Create a fully configured alert manager with Redis-backed cooldown."""
     
     config = AlertConfig(
         company_thresholds=company_thresholds or {},
@@ -308,7 +332,7 @@ def create_alert_manager(webhook_url: str, channel: str = "#supply-chain-alerts"
         cooldown_minutes=cooldown_minutes
     )
     
-    threshold_checker = AlertThresholdChecker(config)
+    threshold_checker = AlertThresholdChecker(config, redis_client=redis_client)
     notification_service = SlackNotificationService(webhook_url, channel)
     
     return AlertManager(threshold_checker, notification_service)

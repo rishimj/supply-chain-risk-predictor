@@ -67,11 +67,45 @@ services:
     networks:
       - supply-chain-network
 
-  enrichment:
+  # Nginx Load Balancer for Enrichment Services
+  nginx-lb:
+    build:
+      context: ./nginx
+      dockerfile: Dockerfile
+    container_name: supply-chain-nginx-lb
+    ports:
+      - "8085:80" # Load balancer endpoint
+    depends_on:
+      enrichment-1:
+        condition: service_healthy
+      enrichment-2:
+        condition: service_healthy
+      enrichment-3:
+        condition: service_healthy
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "wget",
+          "--no-verbose",
+          "--tries=1",
+          "--spider",
+          "http://localhost/healthz",
+        ]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+      start_period: 5s
+    restart: unless-stopped
+    networks:
+      - supply-chain-network
+
+  # Enrichment Service Instance 1
+  enrichment-1:
     build:
       context: ./enrichment-py
       dockerfile: Dockerfile
-    container_name: supply-chain-enrichment
+    container_name: supply-chain-enrichment-1
     ports:
       - "8082:8082"
       - "9102:9102" # Prometheus metrics
@@ -79,6 +113,55 @@ services:
       PORT: 8082
       PROM_PORT: 9102
       SERVICE_ENV: production
+      INSTANCE_ID: "1"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8082/healthz"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+    restart: unless-stopped
+    networks:
+      - supply-chain-network
+
+  # Enrichment Service Instance 2
+  enrichment-2:
+    build:
+      context: ./enrichment-py
+      dockerfile: Dockerfile
+    container_name: supply-chain-enrichment-2
+    ports:
+      - "8086:8082"
+      - "9103:9102" # Prometheus metrics
+    environment:
+      PORT: 8082
+      PROM_PORT: 9102
+      SERVICE_ENV: production
+      INSTANCE_ID: "2"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8082/healthz"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+    restart: unless-stopped
+    networks:
+      - supply-chain-network
+
+  # Enrichment Service Instance 3
+  enrichment-3:
+    build:
+      context: ./enrichment-py
+      dockerfile: Dockerfile
+    container_name: supply-chain-enrichment-3
+    ports:
+      - "8087:8082"
+      - "9104:9102" # Prometheus metrics
+    environment:
+      PORT: 8082
+      PROM_PORT: 9102
+      SERVICE_ENV: production
+      INSTANCE_ID: "3"
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8082/healthz"]
       interval: 30s
@@ -174,22 +257,25 @@ services:
     environment:
       KAFKA_BOOTSTRAP: kafka:9092
       REDIS_URL: redis://redis:6379/0
-      USE_MOCK_ENRICHMENT: "true"  # Start with mock for testing
-      ENRICHMENT_ENDPOINT: http://enrichment:8082
+      USE_MOCK_ENRICHMENT: "false" # Use real enrichment through load balancer
+      ENRICHMENT_ENDPOINT: http://nginx-lb # Point to nginx load balancer
       SERVICE_ENV: production
       FLINK_PARALLELISM: 2
+      SLACK_WEBHOOK_URL: "disabled" # Set to actual webhook URL to enable alerts
+      SLACK_CHANNEL: "#supply-chain-alerts"
+      ALERT_COOLDOWN_MINUTES: "30"
     depends_on:
       kafka:
         condition: service_healthy
       redis:
         condition: service_healthy
-      enrichment:
+      nginx-lb:
         condition: service_healthy
     restart: unless-stopped
     networks:
       - supply-chain-network
     ports:
-      - "8083:8080"  # Expose Flink web UI if available
+      - "8083:8080" # Expose Flink web UI if available
 
 volumes:
   kafka-data:

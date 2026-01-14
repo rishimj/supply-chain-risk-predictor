@@ -1,2 +1,6 @@
-context.md
-CLAUDE.md
+# Documents folder
+documents/
+
+# All markdown files except README.md
+*.md
+!README.md

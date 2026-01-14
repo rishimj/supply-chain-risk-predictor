@@ -184,27 +184,37 @@ class CompanyFeaturesWindowFunction(ProcessAllWindowFunction):
 class AlertingSink(SinkFunction):
     """Sink that processes features for risk alerting."""
     
-    def __init__(self, slack_webhook_url: str, alert_config: dict):
+    def __init__(self, slack_webhook_url: str, alert_config: dict, redis_url: str):
         self.slack_webhook_url = slack_webhook_url
         self.alert_config = alert_config
+        self.redis_url = redis_url
         self.alert_manager = None
+        self.redis_client = None
     
     def open(self, configuration):
-        """Initialize alert manager."""
+        """Initialize alert manager with Redis connection."""
         try:
+            # Initialize Redis for cooldown tracking
+            self.redis_client = redis.from_url(self.redis_url, decode_responses=True)
+            self.redis_client.ping()
+            logger.info(f"AlertingSink connected to Redis: {self.redis_url}")
+            
+            # Initialize alert manager
             if self.slack_webhook_url and self.slack_webhook_url != "disabled":
                 self.alert_manager = create_alert_manager(
                     webhook_url=self.slack_webhook_url,
                     channel=self.alert_config.get("channel", "#supply-chain-alerts"),
                     company_thresholds=self.alert_config.get("company_thresholds", {}),
-                    default_threshold=self.alert_config.get("default_threshold", 0.8),
-                    cooldown_minutes=self.alert_config.get("cooldown_minutes", 30)
+                    default_threshold=self.alert_config.get("default_threshold", 0.7),
+                    cooldown_minutes=self.alert_config.get("cooldown_minutes", 30),
+                    redis_client=self.redis_client
                 )
-                logger.info(f"Alert manager initialized with Slack webhook")
+                logger.info(f"Alert manager initialized with Redis cooldown")
             else:
                 logger.info("Alerting disabled - no webhook URL configured")
         except Exception as e:
-            logger.error(f"Failed to initialize alert manager: {e}")
+            logger.error(f"Failed to initialize AlertingSink: {e}")
+            raise
     
     def invoke(self, value: str, context):
         """Process features and check for alerts."""
@@ -236,6 +246,11 @@ class AlertingSink(SinkFunction):
                 
         except Exception as e:
             logger.error(f"Error processing alert for features: {e}")
+    
+    def close(self):
+        """Close Redis connection."""
+        if self.redis_client:
+            self.redis_client.close()
 
 
 class RedisFeatureSink(SinkFunction):
@@ -318,15 +333,9 @@ def create_news_processing_job():
     slack_webhook_url = os.getenv('SLACK_WEBHOOK_URL', 'disabled')
     alert_config = {
         "channel": os.getenv('SLACK_CHANNEL', '#supply-chain-alerts'),
-        "company_thresholds": {
-            "AAPL": float(os.getenv('ALERT_THRESHOLD_AAPL', '0.7')),
-            "TSLA": float(os.getenv('ALERT_THRESHOLD_TSLA', '0.6')),
-            "MSFT": float(os.getenv('ALERT_THRESHOLD_MSFT', '0.75')),
-            "GOOGL": float(os.getenv('ALERT_THRESHOLD_GOOGL', '0.8')),
-            "AMZN": float(os.getenv('ALERT_THRESHOLD_AMZN', '0.75'))
-        },
-        "default_threshold": float(os.getenv('ALERT_THRESHOLD_DEFAULT', '0.8')),
-        "cooldown_minutes": int(os.getenv('ALERT_COOLDOWN_MINUTES', '30'))
+        "company_thresholds": {},  # No per-company overrides
+        "default_threshold": 0.7,  # Universal threshold
+        "cooldown_minutes": 30     # Fixed 30-min cooldown
     }
     
     logger.info(f"Starting job with config:")
@@ -335,7 +344,7 @@ def create_news_processing_job():
     logger.info(f"  Enrichment: {enrichment_url} (mock: {use_mock_enrichment})")
     logger.info(f"  Redis: {redis_url}")
     logger.info(f"  Slack Alerts: {'enabled' if slack_webhook_url != 'disabled' else 'disabled'}")
-    logger.info(f"  Alert Thresholds: {alert_config['company_thresholds']}")
+    logger.info(f"  Alert Threshold: 0.7 (universal), Cooldown: 30min (Redis)")
     
     # Kafka consumer for raw news
     kafka_props = {
@@ -353,26 +362,27 @@ def create_news_processing_job():
     # Create the pipeline
     news_stream = env.add_source(news_consumer).name("kafka_source")
     
-    # Set watermark strategy for event time processing (newer API)
-    news_stream = news_stream.assign_timestamps_and_watermarks(
-        WatermarkStrategy
-        .for_bounded_out_of_orderness(Time.minutes(5))
-        .with_timestamp_assigner(lambda element, timestamp: int(datetime.utcnow().timestamp() * 1000))
-    )
+    # Use processing time semantics (simpler and works with current setup)
+    # Event time would require parsing timestamps from Kafka messages
     
     # Step 1: Enrich news with company mentions
     mentions_stream = (news_stream
                       .process(NewsEnrichmentFunction(enrichment_url, use_mock_enrichment))
                       .name("enrich_news"))
     
-    # Step 2: Aggregate features using tumbling windows (5min windows, no overlap)
+    # Step 2: Aggregate features using tumbling windows (1min windows, no overlap)
     features_stream = (mentions_stream
-                      .window_all(TumblingEventTimeWindows.of(Time.minutes(5)))
+                      .window_all(TumblingEventTimeWindows.of(Time.minutes(1)))
                       .process(CompanyFeaturesWindowFunction())
                       .name("aggregate_features"))
     
     # Step 3: Write features to Redis
     features_stream.add_sink(RedisFeatureSink(redis_url)).name("redis_sink")
+    
+    # Step 4: Send alerts for high-risk features (threshold: 0.7, Redis cooldown)
+    features_stream.add_sink(
+        AlertingSink(slack_webhook_url, alert_config, redis_url)
+    ).name("alerting_sink")
     
     return env
 

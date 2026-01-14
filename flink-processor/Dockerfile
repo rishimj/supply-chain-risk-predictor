@@ -37,5 +37,5 @@ ENV FLINK_CLASSPATH=/app/jars/flink-connector-kafka.jar:/app/jars/kafka-clients.
 RUN useradd -m -u 1000 appuser && chown -R appuser:appuser /app
 USER appuser
 
-# Default command (use simple version for now)
-CMD ["python", "src/simple_flink_job.py"]
+# Default command (use news processing job with alerting)
+CMD ["python", "src/news_processing_job.py"]

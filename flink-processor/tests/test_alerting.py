@@ -151,13 +151,28 @@ class TestAlertThresholdChecker:
         assert should_alert is False
     
     def test_cooldown_prevents_duplicate_alerts(self):
-        """Test cooldown mechanism prevents spam alerts."""
+        """Test cooldown mechanism prevents spam alerts (requires Redis)."""
         config = AlertConfig(
             company_thresholds={"AAPL": 0.7},
             default_threshold=0.8,
             cooldown_minutes=30
         )
-        checker = AlertThresholdChecker(config)
+        
+        # Create mock Redis client
+        mock_redis = Mock()
+        redis_state = {}
+        
+        def exists_impl(key):
+            return key in redis_state
+        
+        def setex_impl(key, ttl, value):
+            redis_state[key] = value
+            return True
+        
+        mock_redis.exists = Mock(side_effect=exists_impl)
+        mock_redis.setex = Mock(side_effect=setex_impl)
+        
+        checker = AlertThresholdChecker(config, redis_client=mock_redis)
         
         features = CompanyFeatures(
             ticker="AAPL",
