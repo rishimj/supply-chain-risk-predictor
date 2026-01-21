@@ -4,3 +4,33 @@ documents/
 # All markdown files except README.md
 *.md
 !README.md
+
+# Benchmarks (private performance data)
+benchmarks/
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+dist/
+build/
+
+# Environment
+.env
+.venv/
+venv/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs and results
+*.log
+*_results.json
