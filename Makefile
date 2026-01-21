@@ -1,4 +1,4 @@
-.PHONY: help start stop restart logs logs-gateway logs-kafka build test test-gateway test-kafka send-news clean
+.PHONY: help start stop restart logs logs-gateway logs-kafka logs-flink build test test-gateway test-kafka send-news clean flink-status flink-ui verify-flink
 
 # Default target
 help: ## Show this help message
@@ -16,7 +16,9 @@ start: ## Start all services
 	@echo "🔗 Gateway API: http://localhost:8080"
 	@echo "📊 Metrics: http://localhost:9100/metrics"
 	@echo "🖥️  Kafka UI: http://localhost:8090"
-	@echo "🔴 Redis UI: http://localhost:8081 (admin/admin)"
+	@echo "🔴 Redis UI: http://localhost:8084 (admin/admin)"
+	@echo "⚡ Flink Web UI: http://localhost:8081"
+	@echo "🐘 PostgreSQL: localhost:5432 (supply_chain_user/changeme)"
 
 stop: ## Stop all services
 	@echo "🛑 Stopping all services..."
@@ -36,6 +38,12 @@ logs-kafka: ## Show logs for kafka service only
 
 logs-kafka-ui: ## Show logs for kafka-ui service only
 	docker-compose logs -f kafka-ui
+
+logs-flink: ## Show logs for Flink cluster
+	docker-compose logs -f flink-jobmanager flink-taskmanager-1 flink-taskmanager-2 flink-processor
+
+logs-flink-job: ## Show logs for Flink job processor
+	docker-compose logs -f flink-processor
 
 build: ## Build all Docker images
 	@echo "🔨 Building services..."
@@ -73,6 +81,19 @@ send-news: ## Send a test news article
 status: ## Show status of all services
 	@echo "📊 Service Status:"
 	@docker-compose ps
+
+flink-status: ## Show detailed Flink cluster status
+	@./scripts/monitor_flink.sh
+
+flink-ui: ## Open Flink Web UI in browser
+	@echo "⚡ Opening Flink Web UI..."
+	@open http://localhost:8081 || xdg-open http://localhost:8081 || echo "Open http://localhost:8081 in your browser"
+
+verify-flink: ## Verify Flink cluster setup and health
+	@./scripts/verify_flink_cluster.sh
+
+verify-lb: ## Verify load balancer setup
+	@./scripts/verify_load_balancer.sh
 
 clean: ## Clean up Docker resources
 	@echo "🧹 Cleaning up..."

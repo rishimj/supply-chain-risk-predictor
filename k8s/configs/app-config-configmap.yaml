@@ -1,0 +1,43 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: app-config
+  namespace: supply-chain-risk
+  labels:
+    app: supply-chain-risk
+data:
+  # Kafka Configuration
+  KAFKA_BOOTSTRAP_SERVERS: "kafka-service:9092"
+  KAFKA_NEWS_TOPIC: "news-articles"
+  KAFKA_ALERTS_TOPIC: "supply-chain-alerts"
+  
+  # Redis Configuration
+  REDIS_HOST: "redis-service"
+  REDIS_PORT: "6379"
+  
+  # PostgreSQL Configuration
+  POSTGRES_HOST: "postgres-service"
+  POSTGRES_PORT: "5432"
+  POSTGRES_DB: "supply_chain_risk"
+  
+  # Enrichment Service Configuration
+  ENRICHMENT_SERVICE_URL: "http://enrichment-service:8000"
+  ENRICHMENT_BATCH_SIZE: "10"
+  ENRICHMENT_BATCH_TIMEOUT_MS: "500"
+  
+  # Flink Configuration
+  FLINK_JOBMANAGER_HOST: "flink-jobmanager"
+  FLINK_JOBMANAGER_PORT: "8081"
+  FLINK_JOB_MODE: "shock"
+  
+  # Shock Detection Configuration
+  SHOCK_SENTIMENT_THRESHOLD: "-0.3"
+  SHOCK_ALERT_COUNT: "3"
+  ASYNC_CAPACITY: "100"
+  
+  # Gateway Configuration
+  GATEWAY_PORT: "8080"
+  
+  # Monitoring
+  PROMETHEUS_PORT: "9090"
+  GRAFANA_PORT: "3000"

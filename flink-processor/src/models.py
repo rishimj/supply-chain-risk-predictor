@@ -146,3 +146,64 @@ class CompanyFeatures:
             "_ver": "v2",
             "_ingest_ts": datetime.utcnow().isoformat() + "Z"
         })
+
+
+@dataclass
+class ShockEvent:
+    """Supply chain shock event (highly negative article)."""
+    news_id: str
+    event_ts: str  # ISO-8601 timestamp (article published time)
+    ticker: str
+    sentiment: float  # Negative sentiment score
+    headline: str  # For context in alerts
+    
+    def to_json(self) -> str:
+        """Convert to JSON string."""
+        return json.dumps({
+            "news_id": self.news_id,
+            "event_ts": self.event_ts,
+            "ticker": self.ticker,
+            "sentiment": self.sentiment,
+            "headline": self.headline
+        })
+
+
+@dataclass
+class ShockFeatures:
+    """Simplified features for shock detection (no positive tracking)."""
+    ticker: str
+    window_end: str  # ISO-8601 timestamp
+    shock_count_5m: int  # Number of shock articles
+    worst_sentiment_5m: float  # Most negative sentiment in window
+    risk_score_5m: float  # Simplified: based on shock count
+    shock_headlines: List[str]  # Recent shock headlines for alerts
+    
+    def to_json(self) -> str:
+        """Convert to JSON string."""
+        return json.dumps({
+            "ticker": self.ticker,
+            "window_end": self.window_end,
+            "shock_count_5m": self.shock_count_5m,
+            "worst_sentiment_5m": self.worst_sentiment_5m,
+            "risk_score_5m": self.risk_score_5m,
+            "shock_headlines": self.shock_headlines
+        })
+    
+    def to_redis_key(self) -> str:
+        """Generate Redis key: shock:{ticker}:{window_end_epoch}"""
+        dt = datetime.fromisoformat(self.window_end.replace('Z', '+00:00'))
+        epoch = int(dt.timestamp())
+        return f"shock:{self.ticker}:{epoch}"
+    
+    def to_redis_value(self) -> str:
+        """Generate Redis value with metadata."""
+        return json.dumps({
+            "ticker": self.ticker,
+            "window_end": self.window_end,
+            "shock_count_5m": self.shock_count_5m,
+            "worst_sentiment_5m": self.worst_sentiment_5m,
+            "risk_score_5m": self.risk_score_5m,
+            "shock_headlines": self.shock_headlines,
+            "_ver": "v1_shock",
+            "_ingest_ts": datetime.utcnow().isoformat() + "Z"
+        })

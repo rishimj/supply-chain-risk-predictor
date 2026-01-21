@@ -1,0 +1,277 @@
+---
+# Flink JobManager Service
+apiVersion: v1
+kind: Service
+metadata:
+  name: flink-jobmanager
+  namespace: supply-chain-risk
+  labels:
+    app: flink
+    component: jobmanager
+spec:
+  type: ClusterIP
+  ports:
+    - name: rpc
+      port: 6123
+      targetPort: 6123
+    - name: ui
+      port: 8081
+      targetPort: 8081
+    - name: blob
+      port: 6124
+      targetPort: 6124
+    - name: metrics
+      port: 9249
+      targetPort: 9249
+  selector:
+    app: flink
+    component: jobmanager
+---
+# Flink JobManager Deployment
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: flink-jobmanager
+  namespace: supply-chain-risk
+  labels:
+    app: flink
+    component: jobmanager
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: flink
+      component: jobmanager
+  template:
+    metadata:
+      labels:
+        app: flink
+        component: jobmanager
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "9249"
+    spec:
+      containers:
+        - name: jobmanager
+          image: supply-chain-flink-processor:latest
+          imagePullPolicy: IfNotPresent
+          args: ["jobmanager"]
+          ports:
+            - containerPort: 6123
+              name: rpc
+            - containerPort: 8081
+              name: ui
+            - containerPort: 6124
+              name: blob
+            - containerPort: 9249
+              name: metrics
+          env:
+            - name: FLINK_PROPERTIES
+              value: |
+                jobmanager.rpc.address: flink-jobmanager
+                jobmanager.rpc.port: 6123
+          envFrom:
+            - configMapRef:
+                name: app-config
+            - secretRef:
+                name: app-secrets
+          volumeMounts:
+            - name: flink-config
+              mountPath: /opt/flink/conf
+            - name: flink-checkpoints
+              mountPath: /flink-checkpoints
+            - name: flink-savepoints
+              mountPath: /flink-savepoints
+          resources:
+            requests:
+              memory: "1Gi"
+              cpu: "500m"
+            limits:
+              memory: "2Gi"
+              cpu: "1000m"
+          livenessProbe:
+            httpGet:
+              path: /overview
+              port: 8081
+            initialDelaySeconds: 60
+            periodSeconds: 10
+          readinessProbe:
+            httpGet:
+              path: /overview
+              port: 8081
+            initialDelaySeconds: 30
+            periodSeconds: 5
+      volumes:
+        - name: flink-config
+          configMap:
+            name: flink-config
+        - name: flink-checkpoints
+          persistentVolumeClaim:
+            claimName: flink-checkpoints-pvc
+        - name: flink-savepoints
+          persistentVolumeClaim:
+            claimName: flink-savepoints-pvc
+---
+# Flink TaskManager Service (headless for discovery)
+apiVersion: v1
+kind: Service
+metadata:
+  name: flink-taskmanager
+  namespace: supply-chain-risk
+  labels:
+    app: flink
+    component: taskmanager
+spec:
+  clusterIP: None
+  ports:
+    - name: data
+      port: 6121
+      targetPort: 6121
+    - name: rpc
+      port: 6122
+      targetPort: 6122
+    - name: metrics
+      port: 9249
+      targetPort: 9249
+  selector:
+    app: flink
+    component: taskmanager
+---
+# Flink TaskManager Deployment
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: flink-taskmanager
+  namespace: supply-chain-risk
+  labels:
+    app: flink
+    component: taskmanager
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: flink
+      component: taskmanager
+  template:
+    metadata:
+      labels:
+        app: flink
+        component: taskmanager
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "9249"
+    spec:
+      containers:
+        - name: taskmanager
+          image: supply-chain-flink-processor:latest
+          imagePullPolicy: IfNotPresent
+          args: ["taskmanager"]
+          ports:
+            - containerPort: 6121
+              name: data
+            - containerPort: 6122
+              name: rpc
+            - containerPort: 9249
+              name: metrics
+          env:
+            - name: FLINK_PROPERTIES
+              value: |
+                jobmanager.rpc.address: flink-jobmanager
+                jobmanager.rpc.port: 6123
+                taskmanager.numberOfTaskSlots: 4
+          envFrom:
+            - configMapRef:
+                name: app-config
+            - secretRef:
+                name: app-secrets
+          volumeMounts:
+            - name: flink-config
+              mountPath: /opt/flink/conf
+            - name: flink-checkpoints
+              mountPath: /flink-checkpoints
+            - name: flink-savepoints
+              mountPath: /flink-savepoints
+          resources:
+            requests:
+              memory: "2Gi"
+              cpu: "1000m"
+            limits:
+              memory: "4Gi"
+              cpu: "2000m"
+      volumes:
+        - name: flink-config
+          configMap:
+            name: flink-config
+        - name: flink-checkpoints
+          persistentVolumeClaim:
+            claimName: flink-checkpoints-pvc
+        - name: flink-savepoints
+          persistentVolumeClaim:
+            claimName: flink-savepoints-pvc
+---
+# Flink Job Submitter (runs once to submit the job)
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: flink-job-submitter
+  namespace: supply-chain-risk
+  labels:
+    app: flink
+    component: job-submitter
+spec:
+  backoffLimit: 3
+  template:
+    metadata:
+      labels:
+        app: flink
+        component: job-submitter
+    spec:
+      restartPolicy: OnFailure
+      containers:
+        - name: job-submitter
+          image: supply-chain-flink-processor:latest
+          imagePullPolicy: IfNotPresent
+          command: ["python", "submit_job.py"]
+          env:
+            - name: FLINK_MODE
+              value: "cluster"
+            - name: FLINK_JOBMANAGER_HOST
+              value: "flink-jobmanager"
+          envFrom:
+            - configMapRef:
+                name: app-config
+            - secretRef:
+                name: app-secrets
+          resources:
+            requests:
+              memory: "512Mi"
+              cpu: "250m"
+            limits:
+              memory: "1Gi"
+              cpu: "500m"
+---
+# PersistentVolumeClaim for Flink checkpoints
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: flink-checkpoints-pvc
+  namespace: supply-chain-risk
+spec:
+  accessModes:
+    - ReadWriteMany
+  resources:
+    requests:
+      storage: 50Gi
+---
+# PersistentVolumeClaim for Flink savepoints
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: flink-savepoints-pvc
+  namespace: supply-chain-risk
+spec:
+  accessModes:
+    - ReadWriteMany
+  resources:
+    requests:
+      storage: 20Gi

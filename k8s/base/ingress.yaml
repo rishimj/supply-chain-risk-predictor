@@ -1,0 +1,67 @@
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: supply-chain-ingress
+  namespace: supply-chain-risk
+  annotations:
+    nginx.ingress.kubernetes.io/rewrite-target: /
+    nginx.ingress.kubernetes.io/ssl-redirect: "false"
+    cert-manager.io/cluster-issuer: "letsencrypt-prod"
+  labels:
+    app: supply-chain-risk
+spec:
+  ingressClassName: nginx
+  rules:
+    - host: supply-chain-risk.local
+      http:
+        paths:
+          # Gateway API
+          - path: /api
+            pathType: Prefix
+            backend:
+              service:
+                name: gateway-service
+                port:
+                  number: 8080
+          
+          # Enrichment API
+          - path: /enrichment
+            pathType: Prefix
+            backend:
+              service:
+                name: enrichment-service
+                port:
+                  number: 8000
+          
+          # Flink Web UI
+          - path: /flink
+            pathType: Prefix
+            backend:
+              service:
+                name: flink-jobmanager
+                port:
+                  number: 8081
+          
+          # Grafana
+          - path: /grafana
+            pathType: Prefix
+            backend:
+              service:
+                name: grafana
+                port:
+                  number: 3000
+          
+          # Prometheus
+          - path: /prometheus
+            pathType: Prefix
+            backend:
+              service:
+                name: prometheus
+                port:
+                  number: 9090
+  # Uncomment for TLS/HTTPS
+  # tls:
+  #   - hosts:
+  #       - supply-chain-risk.example.com
+  #     secretName: supply-chain-tls

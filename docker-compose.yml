@@ -212,7 +212,7 @@ services:
     platform: linux/amd64
     container_name: supply-chain-redis-ui
     ports:
-      - "8081:8081"
+      - "8084:8081"
     environment:
       REDIS_HOSTS: local:redis:6379
       HTTP_USER: admin
@@ -220,6 +220,29 @@ services:
     depends_on:
       redis:
         condition: service_healthy
+    restart: unless-stopped
+    networks:
+      - supply-chain-network
+
+  # PostgreSQL for alert history
+  postgres:
+    image: postgres:16-alpine
+    platform: linux/arm64
+    container_name: supply-chain-postgres
+    ports:
+      - "5432:5432"
+    environment:
+      POSTGRES_DB: supply_chain
+      POSTGRES_USER: supply_chain_user
+      POSTGRES_PASSWORD: changeme
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+      - ./postgres/init:/docker-entrypoint-initdb.d
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U supply_chain_user -d supply_chain"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
     restart: unless-stopped
     networks:
       - supply-chain-network
@@ -247,20 +270,92 @@ services:
   #   networks:
   #     - supply-chain-network
 
-  # Flink processor for advanced stream processing
+  # Flink JobManager (Master)
+  flink-jobmanager:
+    image: flink:1.18.1-scala_2.12-java11
+    platform: linux/arm64
+    container_name: supply-chain-flink-jobmanager
+    hostname: flink-jobmanager
+    ports:
+      - "8081:8081" # Flink Web UI
+      - "6123:6123" # RPC
+    environment:
+      - JOB_MANAGER_RPC_ADDRESS=flink-jobmanager
+      - FLINK_PROPERTIES=jobmanager.rpc.address: flink-jobmanager
+    command: jobmanager
+    volumes:
+      - flink-checkpoints:/tmp/flink-checkpoints
+      - flink-savepoints:/tmp/flink-savepoints
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8081"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    restart: unless-stopped
+    networks:
+      - supply-chain-network
+
+  # Flink TaskManager (Worker) - Instance 1
+  flink-taskmanager-1:
+    image: flink:1.18.1-scala_2.12-java11
+    platform: linux/arm64
+    container_name: supply-chain-flink-taskmanager-1
+    depends_on:
+      flink-jobmanager:
+        condition: service_healthy
+    environment:
+      - JOB_MANAGER_RPC_ADDRESS=flink-jobmanager
+      - TASK_MANAGER_NUMBER_OF_TASK_SLOTS=4
+      - FLINK_PROPERTIES=jobmanager.rpc.address: flink-jobmanager
+    command: taskmanager
+    volumes:
+      - flink-checkpoints:/tmp/flink-checkpoints
+      - flink-savepoints:/tmp/flink-savepoints
+    restart: unless-stopped
+    networks:
+      - supply-chain-network
+
+  # Flink TaskManager (Worker) - Instance 2
+  flink-taskmanager-2:
+    image: flink:1.18.1-scala_2.12-java11
+    platform: linux/arm64
+    container_name: supply-chain-flink-taskmanager-2
+    depends_on:
+      flink-jobmanager:
+        condition: service_healthy
+    environment:
+      - JOB_MANAGER_RPC_ADDRESS=flink-jobmanager
+      - TASK_MANAGER_NUMBER_OF_TASK_SLOTS=4
+      - FLINK_PROPERTIES=jobmanager.rpc.address: flink-jobmanager
+    command: taskmanager
+    volumes:
+      - flink-checkpoints:/tmp/flink-checkpoints
+      - flink-savepoints:/tmp/flink-savepoints
+    restart: unless-stopped
+    networks:
+      - supply-chain-network
+
+  # Flink Job Submitter (Custom processor that submits job to cluster)
   flink-processor:
     build:
       context: ./flink-processor
       dockerfile: Dockerfile
     platform: linux/arm64
-    container_name: supply-chain-flink
+    container_name: supply-chain-flink-processor
     environment:
       KAFKA_BOOTSTRAP: kafka:9092
       REDIS_URL: redis://redis:6379/0
+      POSTGRES_URL: postgresql://supply_chain_user:changeme@postgres:5432/supply_chain
+      # Batch processing configuration for high throughput
+      ENRICHMENT_BATCH_SIZE: "10"  # Articles per batch (10-50 recommended)
+      ENRICHMENT_BATCH_TIMEOUT_MS: "1000"  # Max wait time before flushing batch (ms)
       USE_MOCK_ENRICHMENT: "false" # Use real enrichment through load balancer
       ENRICHMENT_ENDPOINT: http://nginx-lb # Point to nginx load balancer
       SERVICE_ENV: production
-      FLINK_PARALLELISM: 2
+      FLINK_PARALLELISM: 4
+      FLINK_JOBMANAGER_HOST: flink-jobmanager
+      FLINK_JOBMANAGER_PORT: 8081
       SLACK_WEBHOOK_URL: "disabled" # Set to actual webhook URL to enable alerts
       SLACK_CHANNEL: "#supply-chain-alerts"
       ALERT_COOLDOWN_MINUTES: "30"
@@ -269,17 +364,68 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
+      postgres:
+        condition: service_healthy
       nginx-lb:
+        condition: service_healthy
+      flink-jobmanager:
         condition: service_healthy
     restart: unless-stopped
     networks:
       - supply-chain-network
-    ports:
-      - "8083:8080" # Expose Flink web UI if available
+    volumes:
+      - flink-checkpoints:/tmp/flink-checkpoints
+      - flink-savepoints:/tmp/flink-savepoints
+
+  # Flink Shock Detector (Alternative: shock-only detection with async)
+  # To use: Stop flink-processor and start this instead
+  # flink-shock-detector:
+  #   build:
+  #     context: ./flink-processor
+  #     dockerfile: Dockerfile
+  #   platform: linux/arm64
+  #   container_name: supply-chain-flink-shock-detector
+  #   environment:
+  #     KAFKA_BOOTSTRAP: kafka:9092
+  #     REDIS_URL: redis://redis:6379/0
+  #     POSTGRES_URL: postgresql://supply_chain_user:changeme@postgres:5432/supply_chain
+  #     USE_MOCK_ENRICHMENT: "false"
+  #     ENRICHMENT_ENDPOINT: http://nginx-lb
+  #     SERVICE_ENV: production
+  #     FLINK_PARALLELISM: 4
+  #     FLINK_JOBMANAGER_HOST: flink-jobmanager
+  #     FLINK_JOBMANAGER_PORT: 8081
+  #     # Shock detection configuration
+  #     FLINK_JOB_MODE: "shock"  # Run shock detection job instead of standard
+  #     SHOCK_SENTIMENT_THRESHOLD: "-0.5"  # Sentiment below this = shock
+  #     SHOCK_ALERT_COUNT: "3"  # Alert if 3+ shocks in window
+  #     ASYNC_CAPACITY: "200"  # 200 concurrent async enrichment requests
+  #     SLACK_WEBHOOK_URL: "disabled"
+  #     SLACK_CHANNEL: "#supply-chain-shocks"
+  #   depends_on:
+  #     kafka:
+  #       condition: service_healthy
+  #     redis:
+  #       condition: service_healthy
+  #     postgres:
+  #       condition: service_healthy
+  #     nginx-lb:
+  #       condition: service_healthy
+  #     flink-jobmanager:
+  #       condition: service_healthy
+  #   restart: unless-stopped
+  #   networks:
+  #     - supply-chain-network
+  #   volumes:
+  #     - flink-checkpoints:/tmp/flink-checkpoints
+  #     - flink-savepoints:/tmp/flink-savepoints
 
 volumes:
   kafka-data:
   redis-data:
+  postgres-data:
+  flink-checkpoints:
+  flink-savepoints:
 
 networks:
   supply-chain-network:

@@ -38,3 +38,15 @@ class ErrorResponse(BaseModel):
     """Error response model."""
     error: str = Field(..., description="Error message")
     news_id: Optional[str] = Field(None, description="News ID if available")
+
+
+class BatchEnrichmentRequest(BaseModel):
+    """Batch request model for multiple news articles."""
+    articles: List[EnrichmentRequest] = Field(..., description="List of articles to enrich")
+
+
+class BatchEnrichmentResponse(BaseModel):
+    """Batch response model for multiple enrichment results."""
+    results: List[EnrichmentResponse]
+    total_articles: int
+    processing_time_ms: float

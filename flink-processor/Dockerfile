@@ -26,16 +26,25 @@ RUN mkdir -p /app/jars && \
     curl -L https://repo1.maven.org/maven2/org/apache/kafka/kafka-clients/3.1.1/kafka-clients-3.1.1.jar \
          -o /app/jars/kafka-clients.jar
 
-# Copy source code
+# Copy source code and configuration
 COPY src/ ./src/
+COPY flink-conf.yaml ./
+COPY submit_job.py ./
 
 # Set environment variables
 ENV PYTHONPATH=/app/src
 ENV FLINK_CLASSPATH=/app/jars/flink-connector-kafka.jar:/app/jars/kafka-clients.jar
+ENV FLINK_CONF_DIR=/app
+
+# Create directories for checkpoints and savepoints
+RUN mkdir -p /tmp/flink-checkpoints /tmp/flink-savepoints
 
 # Create non-root user
-RUN useradd -m -u 1000 appuser && chown -R appuser:appuser /app
+RUN useradd -m -u 1000 appuser && \
+    chown -R appuser:appuser /app && \
+    chown -R appuser:appuser /tmp/flink-checkpoints && \
+    chown -R appuser:appuser /tmp/flink-savepoints
 USER appuser
 
-# Default command (use news processing job with alerting)
-CMD ["python", "src/news_processing_job.py"]
+# Default command (use job submission script)
+CMD ["python", "submit_job.py"]

@@ -1,0 +1,48 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+bases:
+  - ../../base
+
+namePrefix: dev-
+
+patches:
+  # Reduce replicas for dev
+  - target:
+      kind: Deployment
+      name: enrichment
+    patch: |-
+      - op: replace
+        path: /spec/replicas
+        value: 1
+  
+  - target:
+      kind: Deployment
+      name: gateway
+    patch: |-
+      - op: replace
+        path: /spec/replicas
+        value: 1
+  
+  - target:
+      kind: Deployment
+      name: flink-taskmanager
+    patch: |-
+      - op: replace
+        path: /spec/replicas
+        value: 1
+
+configMapGenerator:
+  - name: app-config
+    behavior: merge
+    literals:
+      - FLINK_JOB_MODE=normal  # Use normal mode in dev
+      - LOG_LEVEL=debug
+
+images:
+  - name: supply-chain-gateway
+    newTag: dev
+  - name: supply-chain-enrichment
+    newTag: dev
+  - name: supply-chain-flink-processor
+    newTag: dev

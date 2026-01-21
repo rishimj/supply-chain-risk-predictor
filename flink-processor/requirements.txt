@@ -7,6 +7,9 @@ kafka-python==2.0.2
 # Redis integration  
 redis==5.0.1
 
+# PostgreSQL async driver
+asyncpg==0.29.0
+
 # HTTP client for enrichment API
 aiohttp==3.9.5
 requests==2.31.0

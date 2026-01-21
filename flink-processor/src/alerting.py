@@ -275,9 +275,11 @@ class AlertManager:
     """Main alert management system that coordinates threshold checking and notifications."""
     
     def __init__(self, threshold_checker: AlertThresholdChecker, 
-                 notification_service: SlackNotificationService):
+                 notification_service: SlackNotificationService,
+                 postgres_logger=None):
         self.threshold_checker = threshold_checker
         self.notification_service = notification_service
+        self.postgres_logger = postgres_logger
         
         # Statistics
         self._alerts_sent = 0
@@ -287,12 +289,30 @@ class AlertManager:
         """Process company features and send alert if threshold is exceeded."""
         try:
             # Check if alert should be triggered
-            if not self.threshold_checker.should_trigger_alert(features):
+            should_trigger = self.threshold_checker.should_trigger_alert(features)
+            
+            # Always create alert object (for logging even if suppressed)
+            alert = self.threshold_checker.create_alert(features)
+            
+            if not should_trigger:
                 self._alerts_suppressed += 1
+                
+                # Log suppressed alert to PostgreSQL
+                if self.postgres_logger:
+                    # Determine suppression reason
+                    in_cooldown = self.threshold_checker._is_in_cooldown_redis(features.ticker)
+                    suppression_reason = "cooldown" if in_cooldown else "threshold_not_met"
+                    
+                    await self.postgres_logger.log_alert(
+                        alert=alert,
+                        notification_sent=False,
+                        suppressed=True,
+                        suppression_reason=suppression_reason
+                    )
+                
                 return False
                 
             # Create and send alert
-            alert = self.threshold_checker.create_alert(features)
             success = await self.notification_service.send_alert(alert)
             
             if success:
@@ -301,21 +321,46 @@ class AlertManager:
                 self._alerts_sent += 1
                 
                 logger.info(f"Alert sent for {features.ticker}: risk={features.risk_score_5m:.3f}")
-                return True
             else:
                 logger.error(f"Failed to send alert for {features.ticker}")
-                return False
+            
+            # Log to PostgreSQL (sent or failed)
+            if self.postgres_logger:
+                await self.postgres_logger.log_alert(
+                    alert=alert,
+                    notification_sent=success,
+                    suppressed=False,
+                    notification_error=None if success else "Slack notification failed"
+                )
+            
+            return success
                 
         except Exception as e:
             logger.error(f"Error processing alert for {features.ticker}: {e}")
+            
+            # Try to log error to PostgreSQL
+            if self.postgres_logger and 'alert' in locals():
+                try:
+                    await self.postgres_logger.log_alert(
+                        alert=alert,
+                        notification_sent=False,
+                        suppressed=False,
+                        notification_error=f"Exception: {str(e)}"
+                    )
+                except Exception as log_error:
+                    logger.error(f"Failed to log error to PostgreSQL: {log_error}")
+            
             return False
     
     def get_statistics(self) -> Dict:
         """Get alerting system statistics."""
-        return {
+        stats = {
             "alerts_sent": self._alerts_sent,
             "alerts_suppressed": self._alerts_suppressed
         }
+        if self.postgres_logger:
+            stats["postgres"] = self.postgres_logger.get_stats()
+        return stats
 
 
 # Factory function for easy setup
@@ -323,8 +368,9 @@ def create_alert_manager(webhook_url: str, channel: str = "#supply-chain-alerts"
                         company_thresholds: Optional[Dict[str, float]] = None,
                         default_threshold: float = 0.7,
                         cooldown_minutes: int = 30,
-                        redis_client=None) -> AlertManager:
-    """Create a fully configured alert manager with Redis-backed cooldown."""
+                        redis_client=None,
+                        postgres_logger=None) -> AlertManager:
+    """Create a fully configured alert manager with Redis-backed cooldown and PostgreSQL logging."""
     
     config = AlertConfig(
         company_thresholds=company_thresholds or {},
@@ -335,4 +381,4 @@ def create_alert_manager(webhook_url: str, channel: str = "#supply-chain-alerts"
     threshold_checker = AlertThresholdChecker(config, redis_client=redis_client)
     notification_service = SlackNotificationService(webhook_url, channel)
     
-    return AlertManager(threshold_checker, notification_service)
+    return AlertManager(threshold_checker, notification_service, postgres_logger=postgres_logger)

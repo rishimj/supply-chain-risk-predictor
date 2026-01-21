@@ -1,0 +1,7 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: supply-chain-risk
+  labels:
+    name: supply-chain-risk
+    environment: production

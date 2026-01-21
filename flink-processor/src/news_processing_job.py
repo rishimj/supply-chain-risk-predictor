@@ -12,68 +12,149 @@ from typing import Iterable
 from pyflink.datastream import StreamExecutionEnvironment
 from pyflink.datastream.connectors import FlinkKafkaConsumer
 from pyflink.common.serialization import SimpleStringSchema
-from pyflink.common.time import Time
-from pyflink.datastream.window import TumblingEventTimeWindows
-from pyflink.common.watermark_strategy import WatermarkStrategy
+from pyflink.common.time import Time, Duration
+from pyflink.datastream.window import SlidingEventTimeWindows
+from pyflink.common.watermark_strategy import WatermarkStrategy, TimestampAssigner
 from pyflink.datastream.functions import ProcessFunction, ProcessAllWindowFunction, SinkFunction
+from pyflink.common.restart_strategy import RestartStrategies
+from pyflink.datastream.checkpointing_mode import CheckpointingMode
 import redis
 
 from models import NewsMessage, CompanyMentionEvent, CompanyFeatures
 from enrichment_client import EnrichmentClient, MockEnrichmentClient
 from alerting import create_alert_manager, AlertManager
+from postgres_logger import PostgresAlertLogger
 
 
 logger = logging.getLogger(__name__)
 
 
+class MentionTimestampAssigner(TimestampAssigner):
+    """Extracts event timestamp from company mention events for event-time processing."""
+    
+    def extract_timestamp(self, value: str, record_timestamp: int) -> int:
+        """
+        Extract timestamp from the event_ts field (article's published time).
+        Returns timestamp in milliseconds for Flink's event-time processing.
+        """
+        try:
+            data = json.loads(value)
+            # Parse ISO-8601 timestamp: "2024-01-15T10:30:00Z"
+            event_ts = data.get('event_ts', '')
+            if event_ts:
+                dt = datetime.fromisoformat(event_ts.replace('Z', '+00:00'))
+                return int(dt.timestamp() * 1000)  # Convert to milliseconds
+        except Exception as e:
+            logger.warning(f"Failed to extract timestamp from event, using record timestamp: {e}")
+        
+        # Fallback to Kafka record timestamp (ingestion time)
+        return record_timestamp if record_timestamp > 0 else int(datetime.utcnow().timestamp() * 1000)
+
+
 class NewsEnrichmentFunction(ProcessFunction):
     """Process function that calls enrichment API and outputs company mentions."""
     
-    def __init__(self, enrichment_url: str, use_mock: bool = False):
+    def __init__(self, enrichment_url: str, use_mock: bool = False, batch_size: int = 10, batch_timeout_ms: int = 1000):
         self.enrichment_url = enrichment_url
         self.use_mock = use_mock
+        self.batch_size = batch_size
+        self.batch_timeout_ms = batch_timeout_ms
         self.client = None
+        self.batch_buffer = []
+        self.last_batch_time = None
     
     def open(self, runtime_context):
         """Initialize the enrichment client."""
         if self.use_mock:
             self.client = MockEnrichmentClient()
         else:
-            self.client = EnrichmentClient(self.enrichment_url)
+            self.client = EnrichmentClient(self.enrichment_url, batch_timeout=5.0)
+        self.last_batch_time = datetime.utcnow()
+        logger.info(f"NewsEnrichmentFunction initialized with batch_size={self.batch_size}, batch_timeout={self.batch_timeout_ms}ms")
     
     def process_element(self, value: str, ctx: ProcessFunction.Context, out):
-        """Process individual news message through enrichment."""
+        """Process news messages with batching for better throughput."""
         try:
             # Parse news message
             news = NewsMessage.from_json(value)
-            logger.info(f"Processing news: {news.news_id}")
             
-            # Call enrichment API (using asyncio.run for now - not ideal but works)
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-            try:
-                enrichment_response = loop.run_until_complete(self.client.enrich_news(news))
-            finally:
-                loop.close()
+            # Add to batch buffer
+            self.batch_buffer.append(news)
             
-            # Convert to individual company mention events
-            event_timestamp = datetime.utcnow().isoformat() + "Z"
+            # Check if we should flush the batch
+            should_flush = False
             
-            for company in enrichment_response.companies:
-                mention_event = CompanyMentionEvent(
-                    news_id=news.news_id,
-                    event_ts=event_timestamp,
-                    ticker=company.ticker,
-                    role=company.role,
-                    sentiment=company.sentiment
-                )
-                
-                logger.info(f"Found company: {company.ticker} (sentiment: {company.sentiment})")
-                out.collect(mention_event.to_json())
+            # Flush if batch is full
+            if len(self.batch_buffer) >= self.batch_size:
+                should_flush = True
+                logger.debug(f"Flushing batch: size limit reached ({self.batch_size} articles)")
+            
+            # Flush if timeout reached
+            elif self.last_batch_time:
+                time_since_last_batch = (datetime.utcnow() - self.last_batch_time).total_seconds() * 1000
+                if time_since_last_batch >= self.batch_timeout_ms:
+                    should_flush = True
+                    logger.debug(f"Flushing batch: timeout reached ({time_since_last_batch:.0f}ms)")
+            
+            if should_flush:
+                self._flush_batch(out)
                 
         except Exception as e:
             logger.error(f"Error processing news {value}: {e}")
             # Don't fail the job, just skip this message
+    
+    def close(self):
+        """Flush any remaining items in the batch on close."""
+        if self.batch_buffer:
+            logger.info(f"Flushing remaining {len(self.batch_buffer)} articles on close")
+            # Create a dummy output collector for close
+            class DummyCollector:
+                def collect(self, value):
+                    pass
+            self._flush_batch(DummyCollector())
+    
+    def _flush_batch(self, out):
+        """Flush the current batch to enrichment API."""
+        if not self.batch_buffer:
+            return
+        
+        batch = self.batch_buffer
+        self.batch_buffer = []
+        self.last_batch_time = datetime.utcnow()
+        
+        try:
+            logger.info(f"Processing batch of {len(batch)} articles")
+            
+            # Call batch enrichment API
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            try:
+                enrichment_responses = loop.run_until_complete(self.client.enrich_batch(batch))
+            finally:
+                loop.close()
+            
+            # Process each response
+            for news, enrichment_response in zip(batch, enrichment_responses):
+                event_timestamp = news.published
+                
+                for company in enrichment_response.companies:
+                    mention_event = CompanyMentionEvent(
+                        news_id=news.news_id,
+                        event_ts=event_timestamp,
+                        ticker=company.ticker,
+                        role=company.role,
+                        sentiment=company.sentiment
+                    )
+                    
+                    logger.debug(f"Found company: {company.ticker} (sentiment: {company.sentiment}, published: {event_timestamp})")
+                    out.collect(mention_event.to_json())
+            
+            total_companies = sum(len(r.companies) for r in enrichment_responses)
+            logger.info(f"Batch processed: {len(batch)} articles → {total_companies} company mentions")
+                
+        except Exception as e:
+            logger.error(f"Error processing batch: {e}")
+            # Don't fail the job, just skip this batch
 
 
 class FeatureAggregator:
@@ -146,7 +227,17 @@ class FeatureAggregator:
 
 
 class CompanyFeaturesWindowFunction(ProcessAllWindowFunction):
-    """Window function that aggregates company mentions into features."""
+    """
+    Window function that aggregates company mentions into risk features.
+    
+    Processes 5-minute sliding windows of company mentions and outputs:
+    - Negative/positive news counts
+    - Sentiment score (EWM)
+    - Risk score (0.0-1.0)
+    
+    With late data handling, windows may fire multiple times as late articles arrive.
+    This is handled downstream by idempotent Redis writes (same key overwrites).
+    """
     
     def process(self, context, elements: Iterable[str], out):
         """Process all elements in the window."""
@@ -171,33 +262,50 @@ class CompanyFeaturesWindowFunction(ProcessAllWindowFunction):
                 continue
         
         # Output features for each ticker
+        window_start = datetime.fromtimestamp(context.window().start / 1000.0)
         window_end = datetime.fromtimestamp(context.window().end / 1000.0)
         
-        logger.info(f"Window processed: {element_count} mentions, {len(ticker_aggregators)} companies")
+        logger.info(f"Window [{window_start.strftime('%H:%M:%S')} - {window_end.strftime('%H:%M:%S')}] processed: {element_count} mentions, {len(ticker_aggregators)} companies")
         
         for ticker, aggregator in ticker_aggregators.items():
             features = aggregator.get_features(ticker, window_end)
-            logger.info(f"5-min Features for {ticker}: pos={features.pos_news_count_5m}, neg={features.neg_news_count_5m}, sentiment={features.sentiment_score_5m}, risk={features.risk_score_5m}")
+            logger.info(f"Features for {ticker}: pos={features.pos_news_count_5m}, neg={features.neg_news_count_5m}, sentiment={features.sentiment_score_5m:.3f}, risk={features.risk_score_5m:.3f}")
             out.collect(features.to_json())
 
 
 class AlertingSink(SinkFunction):
     """Sink that processes features for risk alerting."""
     
-    def __init__(self, slack_webhook_url: str, alert_config: dict, redis_url: str):
+    def __init__(self, slack_webhook_url: str, alert_config: dict, redis_url: str, postgres_url: str = None):
         self.slack_webhook_url = slack_webhook_url
         self.alert_config = alert_config
         self.redis_url = redis_url
+        self.postgres_url = postgres_url
         self.alert_manager = None
         self.redis_client = None
+        self.postgres_logger = None
     
     def open(self, configuration):
-        """Initialize alert manager with Redis connection."""
+        """Initialize alert manager with Redis and PostgreSQL connections."""
         try:
             # Initialize Redis for cooldown tracking
             self.redis_client = redis.from_url(self.redis_url, decode_responses=True)
             self.redis_client.ping()
             logger.info(f"AlertingSink connected to Redis: {self.redis_url}")
+            
+            # Initialize PostgreSQL logger
+            if self.postgres_url:
+                self.postgres_logger = PostgresAlertLogger(self.postgres_url, pool_size=5)
+                # Initialize pool in sync context using asyncio
+                loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(loop)
+                try:
+                    loop.run_until_complete(self.postgres_logger.initialize())
+                    logger.info(f"AlertingSink connected to PostgreSQL: {self.postgres_url}")
+                finally:
+                    loop.close()
+            else:
+                logger.info("PostgreSQL logging disabled - no URL configured")
             
             # Initialize alert manager
             if self.slack_webhook_url and self.slack_webhook_url != "disabled":
@@ -207,9 +315,10 @@ class AlertingSink(SinkFunction):
                     company_thresholds=self.alert_config.get("company_thresholds", {}),
                     default_threshold=self.alert_config.get("default_threshold", 0.7),
                     cooldown_minutes=self.alert_config.get("cooldown_minutes", 30),
-                    redis_client=self.redis_client
+                    redis_client=self.redis_client,
+                    postgres_logger=self.postgres_logger
                 )
-                logger.info(f"Alert manager initialized with Redis cooldown")
+                logger.info(f"Alert manager initialized with Redis cooldown and PostgreSQL logging")
             else:
                 logger.info("Alerting disabled - no webhook URL configured")
         except Exception as e:
@@ -248,9 +357,21 @@ class AlertingSink(SinkFunction):
             logger.error(f"Error processing alert for features: {e}")
     
     def close(self):
-        """Close Redis connection."""
+        """Close connections gracefully."""
+        # Close PostgreSQL connection pool
+        if self.postgres_logger:
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            try:
+                loop.run_until_complete(self.postgres_logger.close())
+                logger.info("PostgreSQL connection pool closed")
+            finally:
+                loop.close()
+        
+        # Close Redis connection
         if self.redis_client:
             self.redis_client.close()
+            logger.info("Redis connection closed")
 
 
 class RedisFeatureSink(SinkFunction):
@@ -319,15 +440,44 @@ def create_news_processing_job():
     env.add_jars("file:///app/jars/flink-connector-kafka.jar")
     env.add_jars("file:///app/jars/kafka-clients.jar")
     
-    parallelism = int(os.getenv('FLINK_PARALLELISM', '2'))
+    parallelism = int(os.getenv('FLINK_PARALLELISM', '4'))
     env.set_parallelism(parallelism)  # Configurable parallelism
+    
+    # Configure checkpointing for fault tolerance
     env.enable_checkpointing(10000)  # Checkpoint every 10 seconds
+    checkpoint_config = env.get_checkpoint_config()
+    checkpoint_config.set_checkpointing_mode(CheckpointingMode.EXACTLY_ONCE)
+    checkpoint_config.set_min_pause_between_checkpoints(5000)  # 5 seconds between checkpoints
+    checkpoint_config.set_checkpoint_timeout(60000)  # 60 second timeout
+    checkpoint_config.set_max_concurrent_checkpoints(1)
+    
+    # Configure checkpoint storage (persistent across restarts)
+    checkpoint_dir = os.getenv('FLINK_CHECKPOINT_DIR', 'file:///tmp/flink-checkpoints')
+    checkpoint_config.set_checkpoint_storage_dir(checkpoint_dir)
+    
+    # Keep checkpoints on job cancellation for recovery
+    checkpoint_config.enable_externalized_checkpoints(
+        checkpoint_config.ExternalizedCheckpointCleanup.RETAIN_ON_CANCELLATION
+    )
+    
+    # Configure restart strategy for fault tolerance
+    env.set_restart_strategy(
+        RestartStrategies.fixed_delay_restart(
+            restart_attempts=3,  # Try 3 times
+            delay_between_attempts=10000  # 10 seconds between attempts
+        )
+    )
     
     # Configuration from environment
     kafka_brokers = os.getenv('KAFKA_BOOTSTRAP', 'kafka:9092')
     enrichment_url = os.getenv('ENRICHMENT_ENDPOINT', 'http://enrichment:8082')
     redis_url = os.getenv('REDIS_URL', 'redis://redis:6379/0')
+    postgres_url = os.getenv('POSTGRES_URL')  # Optional
     use_mock_enrichment = os.getenv('USE_MOCK_ENRICHMENT', 'false').lower() == 'true'
+    
+    # Batch processing configuration
+    batch_size = int(os.getenv('ENRICHMENT_BATCH_SIZE', '10'))
+    batch_timeout_ms = int(os.getenv('ENRICHMENT_BATCH_TIMEOUT_MS', '1000'))
     
     # Alerting configuration
     slack_webhook_url = os.getenv('SLACK_WEBHOOK_URL', 'disabled')
@@ -340,10 +490,14 @@ def create_news_processing_job():
     
     logger.info(f"Starting job with config:")
     logger.info(f"  Parallelism: {parallelism}")
+    logger.info(f"  Checkpoint dir: {checkpoint_dir}")
     logger.info(f"  Kafka: {kafka_brokers}")
     logger.info(f"  Enrichment: {enrichment_url} (mock: {use_mock_enrichment})")
+    logger.info(f"  Batch Size: {batch_size} articles, Timeout: {batch_timeout_ms}ms")
     logger.info(f"  Redis: {redis_url}")
+    logger.info(f"  PostgreSQL: {postgres_url if postgres_url else 'disabled'}")
     logger.info(f"  Slack Alerts: {'enabled' if slack_webhook_url != 'disabled' else 'disabled'}")
+    logger.info(f"  Window: 5-minute sliding (1-min slide), 2-min watermark delay, 5-min late tolerance")
     logger.info(f"  Alert Threshold: 0.7 (universal), Cooldown: 30min (Redis)")
     
     # Kafka consumer for raw news
@@ -362,26 +516,51 @@ def create_news_processing_job():
     # Create the pipeline
     news_stream = env.add_source(news_consumer).name("kafka_source")
     
-    # Use processing time semantics (simpler and works with current setup)
-    # Event time would require parsing timestamps from Kafka messages
-    
-    # Step 1: Enrich news with company mentions
+    # Step 1: Enrich news with company mentions (with batching for high throughput)
+    # The enrichment function preserves the article's published timestamp as event_ts
     mentions_stream = (news_stream
-                      .process(NewsEnrichmentFunction(enrichment_url, use_mock_enrichment))
+                      .process(NewsEnrichmentFunction(
+                          enrichment_url, 
+                          use_mock_enrichment,
+                          batch_size=batch_size,
+                          batch_timeout_ms=batch_timeout_ms
+                      ))
                       .name("enrich_news"))
     
-    # Step 2: Aggregate features using tumbling windows (1min windows, no overlap)
-    features_stream = (mentions_stream
-                      .window_all(TumblingEventTimeWindows.of(Time.minutes(1)))
-                      .process(CompanyFeaturesWindowFunction())
-                      .name("aggregate_features"))
+    # Step 2: Configure watermarks for event-time processing
+    # Watermarks allow Flink to handle out-of-order and late-arriving articles
+    # - 2 minutes out-of-orderness: articles arriving up to 2 min late are still in-order
+    # - Uses article's published time (not processing time) for accurate windowing
+    watermark_strategy = (
+        WatermarkStrategy
+        .for_bounded_out_of_orderness(Duration.of_minutes(2))
+        .with_timestamp_assigner(MentionTimestampAssigner())
+    )
     
-    # Step 3: Write features to Redis
+    # Apply watermarks to the mentions stream
+    watermarked_stream = (mentions_stream
+                         .assign_timestamps_and_watermarks(watermark_strategy)
+                         .name("assign_watermarks"))
+    
+    # Step 3: Aggregate features using SLIDING windows with late data handling
+    # - 5-minute window: aggregates 5 minutes of data for smoother risk calculation
+    # - 1-minute slide: emits updated results every minute (rolling view)
+    # - 5-minute allowed lateness: articles arriving up to 5 min late still update windows
+    features_stream = (watermarked_stream
+                      .window_all(SlidingEventTimeWindows.of(
+                          Time.minutes(5),   # Window size: 5 minutes of data
+                          Time.minutes(1)    # Slide interval: emit every 1 minute
+                      ))
+                      .allowed_lateness(Time.minutes(5))  # Accept late data up to 5 more minutes
+                      .process(CompanyFeaturesWindowFunction())
+                      .name("aggregate_features_5m_sliding"))
+    
+    # Step 4: Write features to Redis (idempotent - same window_end overwrites)
     features_stream.add_sink(RedisFeatureSink(redis_url)).name("redis_sink")
     
-    # Step 4: Send alerts for high-risk features (threshold: 0.7, Redis cooldown)
+    # Step 5: Send alerts for high-risk features (threshold: 0.7, Redis cooldown, PostgreSQL logging)
     features_stream.add_sink(
-        AlertingSink(slack_webhook_url, alert_config, redis_url)
+        AlertingSink(slack_webhook_url, alert_config, redis_url, postgres_url)
     ).name("alerting_sink")
     
     return env

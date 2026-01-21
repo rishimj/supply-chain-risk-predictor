@@ -4,7 +4,7 @@ Async HTTP client for calling the enrichment API.
 import asyncio
 import json
 import logging
-from typing import Optional
+from typing import Optional, List
 import aiohttp
 from models import NewsMessage, EnrichmentResponse, CompanyMention
 
@@ -15,16 +15,18 @@ logger = logging.getLogger(__name__)
 class EnrichmentClient:
     """Async HTTP client for enrichment API calls."""
     
-    def __init__(self, base_url: str, timeout: float = 0.8):
+    def __init__(self, base_url: str, timeout: float = 0.8, batch_timeout: float = 5.0):
         """
         Initialize enrichment client.
         
         Args:
             base_url: Base URL for enrichment service (e.g., "http://enrichment:8080")
-            timeout: Timeout in seconds (default 0.8s as per context)
+            timeout: Timeout in seconds for single requests (default 0.8s)
+            batch_timeout: Timeout in seconds for batch requests (default 5.0s)
         """
         self.base_url = base_url.rstrip('/')
         self.timeout = aiohttp.ClientTimeout(total=timeout)
+        self.batch_timeout = aiohttp.ClientTimeout(total=batch_timeout)
         self._session: Optional[aiohttp.ClientSession] = None
 
     async def get_session(self) -> aiohttp.ClientSession:
@@ -85,6 +87,79 @@ class EnrichmentClient:
             logger.error(f"Enrichment error for news_id={news.news_id}: {e}")
             # Return empty result on any error
             return EnrichmentResponse(news_id=news.news_id, companies=[])
+    
+    async def enrich_batch(self, news_batch: List[NewsMessage]) -> List[EnrichmentResponse]:
+        """
+        Call enrichment API to process multiple articles in batch for better throughput.
+        
+        Args:
+            news_batch: List of news messages to enrich
+            
+        Returns:
+            List of EnrichmentResponse objects (one per article)
+            
+        Raises:
+            TimeoutError: If batch API call times out
+            Exception: For other HTTP errors
+        """
+        if not news_batch:
+            return []
+        
+        session = await self.get_session()
+        url = f"{self.base_url}/v1/enrich/batch"
+        
+        try:
+            logger.debug(f"Calling batch enrichment API for {len(news_batch)} articles")
+            
+            # Build batch request payload
+            batch_payload = {
+                "articles": [news.to_enrichment_request() for news in news_batch]
+            }
+            
+            # Use longer timeout for batch requests
+            async with session.post(url, json=batch_payload, timeout=self.batch_timeout) as response:
+                if response.status == 200:
+                    response_data = await response.json()
+                    
+                    # Parse batch response
+                    results = []
+                    for result_data in response_data.get('results', []):
+                        result = EnrichmentResponse(
+                            news_id=result_data['news_id'],
+                            companies=[
+                                CompanyMention(
+                                    ticker=c['ticker'],
+                                    role=c['role'],
+                                    sentiment=c['sentiment']
+                                )
+                                for c in result_data.get('companies', [])
+                            ]
+                        )
+                        results.append(result)
+                    
+                    total_companies = sum(len(r.companies) for r in results)
+                    logger.debug(
+                        f"Batch enrichment success: {len(news_batch)} articles, "
+                        f"{total_companies} companies found, "
+                        f"{response_data.get('processing_time_ms', 0):.1f}ms"
+                    )
+                    return results
+                else:
+                    logger.warning(
+                        f"Batch enrichment API error: status={response.status}"
+                    )
+                    # Return empty results for all articles on error
+                    return [EnrichmentResponse(news_id=news.news_id, companies=[]) for news in news_batch]
+                    
+        except asyncio.TimeoutError:
+            logger.warning(f"Batch enrichment timeout for {len(news_batch)} articles")
+            # Return empty results on timeout
+            return [EnrichmentResponse(news_id=news.news_id, companies=[]) for news in news_batch]
+            
+        except Exception as e:
+            logger.error(f"Batch enrichment error for {len(news_batch)} articles: {e}")
+            # Return empty results on any error
+            return [EnrichmentResponse(news_id=news.news_id, companies=[]) for news in news_batch]
 
 
 # For testing without actual enrichment service

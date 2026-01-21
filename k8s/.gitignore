@@ -1,0 +1,11 @@
+# Secrets - NEVER commit real secrets!
+base/secrets.yaml
+
+# Backup files
+*.backup
+*.bak
+backup-*.yaml
+
+# Generated files
+*.tmp
+*.temp

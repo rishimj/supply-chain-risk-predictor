@@ -1,0 +1,36 @@
+# Flink Configuration for Cluster Deployment
+# This configuration is used when submitting jobs to the Flink cluster
+
+# JobManager settings
+jobmanager.rpc.address: flink-jobmanager
+jobmanager.rpc.port: 6123
+jobmanager.memory.process.size: 1600m
+
+# TaskManager settings
+taskmanager.memory.process.size: 1728m
+taskmanager.numberOfTaskSlots: 4
+
+# Parallelism
+parallelism.default: 4
+
+# Checkpointing
+state.backend: filesystem
+state.checkpoints.dir: file:///tmp/flink-checkpoints
+state.savepoints.dir: file:///tmp/flink-savepoints
+
+# Enable queryable state
+queryable-state.enable: true
+
+# High availability (optional - for production)
+# high-availability: zookeeper
+# high-availability.storageDir: file:///tmp/flink-ha
+# high-availability.zookeeper.quorum: zookeeper:2181
+
+# Metrics
+metrics.reporter.prom.factory.class: org.apache.flink.metrics.prometheus.PrometheusReporterFactory
+metrics.reporter.prom.port: 9249
+
+# Restart strategy
+restart-strategy: fixed-delay
+restart-strategy.fixed-delay.attempts: 3
+restart-strategy.fixed-delay.delay: 10s
